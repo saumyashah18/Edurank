@@ -395,3 +395,62 @@ textarea {
     display: none !important;
     /* Managed by interaction-bar icons now */
 }
+
+/* Typing Indicator */
+.typing-bubble {
+    padding: 0.75rem 1.25rem !important;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: fit-content;
+    background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.dot {
+    width: 6px;
+    height: 6px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    animation: pulse 1.5s infinite ease-in-out;
+    opacity: 0.4;
+}
+
+.dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.dot:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        transform: translateY(0);
+        opacity: 0.4;
+    }
+
+    50% {
+        transform: translateY(-4px);
+        opacity: 1;
+    }
+}
+
+/* Response Fade-In */
+@keyframes fadeInSlide {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.bot-bubble,
+.user-bubble {
+    animation: fadeInSlide 0.3s ease-out;
+}

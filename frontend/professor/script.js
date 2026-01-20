@@ -80,18 +80,44 @@ async function fetchNextSimQuestion() {
     }
 }
 
-function handleStudentResponse() {
+async function handleStudentResponse() {
     const input = document.getElementById('sim-student-input');
     const history = document.getElementById('sim-chat-history');
     const answer = input.value.trim();
 
     if (!answer) return;
 
+    // Show student bubble
     history.innerHTML += `<div class="chat-bubble user-bubble">${answer}</div>`;
     input.value = '';
-
-    // Evaluation state (Optional, but keeping for logic)
     history.scrollTop = history.scrollHeight;
+
+    // Show typing indicator before next question
+    showTypingIndicator();
+
+    // Smooth delay for natural feel
+    setTimeout(async () => {
+        removeTypingIndicator();
+        await fetchNextSimQuestion();
+    }, 1500);
+}
+
+function showTypingIndicator() {
+    const history = document.getElementById('sim-chat-history');
+    const typingHtml = `
+        <div class="chat-bubble bot-bubble typing-bubble" id="typing-indicator">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+        </div>
+    `;
+    history.innerHTML += typingHtml;
+    history.scrollTop = history.scrollHeight;
+}
+
+function removeTypingIndicator() {
+    const indicator = document.getElementById('typing-indicator');
+    if (indicator) indicator.remove();
 }
 
 function copyToClipboard(text) {
@@ -110,7 +136,7 @@ async function rankSimQuestion(action) {
         });
         if (response.ok) {
             console.log(`[AI] Question ${currentSimQuestionId} ranked as ${action}`);
-            fetchNextSimQuestion();
+            // Voluntary: No automatic fetch here
         }
     } catch (err) {
         console.error("Ranking failed", err);

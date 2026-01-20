@@ -152,25 +152,32 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Sess
         ~Question.id.in_(exclude_list)
     )
     
-    # 2. Strategy: Group by exposure (low to high) and pick randomly from the least-exposed ones
-    # exposure = upvotes + downvotes
-    from sqlalchemy import func
+    # 2. Strategy: Mixed Novelty (Exposure) & Quality (Likes)
+    # This addresses "More of such" (Quality) while maintaining coverage (Novelty)
     
-    top_questions = query.order_by(
-        (Question.upvotes + Question.downvotes).asc(), # Least seen/ranked first
-        (Question.upvotes - Question.downvotes).desc() # Then highest net score
-    ).limit(10).all()
-    
-    if not top_questions:
+    # Pool A: Novelty - Least seen questions first
+    pool_novelty = query.order_by(
+        (Question.upvotes + Question.downvotes).asc()
+    ).limit(7).all()
+
+    # Pool B: Quality - Highly ranked questions (More of such)
+    # We filter by approved and those that have positive sentiment
+    pool_quality = query.filter(Question.upvotes > Question.downvotes).order_by(
+        (Question.upvotes - Question.downvotes).desc()
+    ).limit(7).all()
+
+    # Merge candidates (Unique IDs)
+    candidates = {q.id: q for q in pool_novelty + pool_quality}.values()
+    candidates = list(candidates)
+
+    if not candidates:
         if exclude_list:
-            return {"reset": True, "message": "Variety exhausted. Resetting session history."}
-        raise HTTPException(status_code=404, detail="No available assessment content found.")
+            return {"reset": True, "message": "Syllabus variety cycle complete. Resetting."}
+        raise HTTPException(status_code=404, detail="No assessment content found.")
     
     import random
-    # Shuffle the top candidates to avoid "alternating" patterns
-    random.shuffle(top_questions)
-    question = top_questions[0]
-
+    random.shuffle(candidates)
+    question = candidates[0]
         
     return {
         "id": question.id, 
@@ -179,6 +186,7 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Sess
         "status": question.status.value,
         "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}"
     }
+
 
 
 
