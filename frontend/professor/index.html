@@ -74,32 +74,30 @@
             <div id="simulation-container" class="simulation-stream">
                 <div class="chat-header">
                     <h4>🤖 Assessment AI Simulation</h4>
-                    <p>Testing the bot's behavior. Interact as a student to review/rank questions.</p>
+                    <p>Testing the bot's behavior. Review and rank questions using the icons.</p>
                 </div>
 
                 <div id="sim-chat-history" class="chat-history">
-                    <div class="chat-bubble bot-bubble">Welcome Professor! Upload your syllabus to start the
+                    <div class="chat-bubble bot-bubble">✨ Welcome Professor! Upload your syllabus to start the
                         simulation...</div>
                 </div>
 
                 <div class="sim-input-area" id="sim-input-wrapper" style="display: none;">
-                    <textarea id="sim-student-input" placeholder="Type answer as a student..." rows="3"></textarea>
-                    <button class="btn-primary" id="sim-send-btn">Send ➡️</button>
-                </div>
-
-                <div id="sim-actions-panel" class="sim-controls" style="display: none;">
-                    <div class="feedback-label">Is this question grounded and clear?</div>
-                    <div class="feedback-btns">
-                        <button class="action-btn dislike" id="sim-dislike-btn">👎 Dislike</button>
-                        <button class="action-btn like" id="sim-like-btn">👍 Like</button>
-                        <button class="action-btn next" id="sim-next-btn">Next Question ➡️</button>
-                    </div>
+                    <textarea id="sim-student-input" placeholder="Type answer as a student..." rows="1"></textarea>
+                    <button class="btn-primary" id="sim-send-btn">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
             <!-- Fallback Static Queue (Hidden) -->
             <div id="question-list" class="question-stream" style="display: none;"></div>
         </section>
+
 
     </main>
 

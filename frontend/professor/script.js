@@ -20,9 +20,6 @@ function setupUI() {
     generateBtn.addEventListener('click', handleGenerate);
 
     // Simulation Controls
-    document.getElementById('sim-next-btn').addEventListener('click', fetchNextSimQuestion);
-    document.getElementById('sim-like-btn').addEventListener('click', () => rankSimQuestion('like'));
-    document.getElementById('sim-dislike-btn').addEventListener('click', () => rankSimQuestion('dislike'));
     document.getElementById('sim-send-btn').addEventListener('click', handleStudentResponse);
 
     // Initial state: Waiting for content generation (No auto-fetch)
@@ -34,27 +31,17 @@ let seenQuestionIds = [];
 async function fetchNextSimQuestion() {
     const history = document.getElementById('sim-chat-history');
     const inputWrapper = document.getElementById('sim-input-wrapper');
-    const actionsPanel = document.getElementById('sim-actions-panel');
-
-    inputWrapper.style.display = 'none';
-    actionsPanel.style.display = 'none';
-
-    history.innerHTML += `<div class="chat-bubble bot-bubble">🤖 Looking for fresh topics in your syllabus...</div>`;
-    history.scrollTop = history.scrollHeight;
 
     try {
         const excludeStr = seenQuestionIds.join(",");
-        console.log("[DEBUG] Fetching next simulation question. Excluded IDs:", excludeStr);
-
         const response = await fetch(`${API_BASE}/professor/simulate/next?course_id=1&exclude_ids=${excludeStr}`);
         if (!response.ok) throw new Error("No questions available");
 
         const q = await response.json();
 
         if (q.reset) {
-            console.log("[DEBUG] Variety cycle complete. Resetting seen history.");
             seenQuestionIds = [];
-            history.innerHTML += `<div class="chat-bubble bot-bubble">🔄 I've shown you all available topics. Starting a new variety cycle now!</div>`;
+            history.innerHTML += `<div class="chat-bubble bot-bubble">🔄 Varierty cycle complete. Restarting...</div>`;
             return fetchNextSimQuestion();
         }
 
@@ -63,27 +50,33 @@ async function fetchNextSimQuestion() {
             seenQuestionIds.push(q.id);
         }
 
-
-        // Clear previous "Thinking" message
-        if (history.lastElementChild.innerText.includes("Looking for")) {
-            history.lastElementChild.remove();
-        }
-
-        history.innerHTML += `
-            <div class="chat-bubble bot-bubble">
-                <small style="opacity: 0.6; display: block; margin-bottom: 4px;">Topic: ${q.context || 'General'}</small>
-                <strong>Bot (${q.status.toUpperCase()}):</strong><br>
+        const questionHtml = `
+            <div class="chat-bubble bot-bubble" id="sim-q-${q.id}">
+                <small style="opacity: 0.6; display: block; margin-bottom: 8px;">${q.context || 'General'}</small>
                 ${q.text}
+                
+                <div class="interaction-bar">
+                    <button class="icon-action" title="Good Question" onclick="rankSimQuestion('like')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
+                    </button>
+                    <button class="icon-action" title="Bad Question" onclick="rankSimQuestion('dislike')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"></path></svg>
+                    </button>
+                    <button class="icon-action" title="Regenerate/Next" onclick="fetchNextSimQuestion()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                    </button>
+                    <button class="icon-action" title="Copy Question" onclick="copyToClipboard('${q.text.replace(/'/g, "\\'")}')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                </div>
             </div>
         `;
 
+        history.innerHTML += questionHtml;
         inputWrapper.style.display = 'flex';
         history.scrollTop = history.scrollHeight;
     } catch (err) {
-        if (history.lastElementChild && history.lastElementChild.innerText.includes("Looking for")) {
-            history.lastElementChild.remove();
-        }
-        history.innerHTML += `<div class="chat-bubble bot-bubble">No new questions found. Please click 'Generate More' to expand my knowledge!</div>`;
+        history.innerHTML += `<div class="chat-bubble bot-bubble">No fresh questions. Click 'Generate' to expand!</div>`;
     }
 }
 
@@ -94,19 +87,19 @@ function handleStudentResponse() {
 
     if (!answer) return;
 
-    // Show student bubble
     history.innerHTML += `<div class="chat-bubble user-bubble">${answer}</div>`;
     input.value = '';
 
-    // Show bot evaluation
-    setTimeout(() => {
-        history.innerHTML += `<div class="chat-bubble bot-bubble">🤖 Analyzing your answer... (Ranking panels enabled)</div>`;
-        document.getElementById('sim-actions-panel').style.display = 'flex';
-        history.scrollTop = history.scrollHeight;
-    }, 800);
-
+    // Evaluation state (Optional, but keeping for logic)
     history.scrollTop = history.scrollHeight;
 }
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        alert("Question copied to clipboard!");
+    });
+}
+
 
 async function rankSimQuestion(action) {
     if (!currentSimQuestionId) return;
@@ -116,13 +109,14 @@ async function rankSimQuestion(action) {
             method: 'POST'
         });
         if (response.ok) {
-            alert(`Question ranked as ${action}! Finding next variety...`);
+            console.log(`[AI] Question ${currentSimQuestionId} ranked as ${action}`);
             fetchNextSimQuestion();
         }
     } catch (err) {
-        alert("Ranking failed");
+        console.error("Ranking failed", err);
     }
 }
+
 
 
 async function handleFileUpload(e) {
@@ -180,17 +174,22 @@ async function handleGenerate() {
         });
 
         if (response.ok) {
-            const data = await response.json();
-            console.log("[AI] Batch generation result:", data);
             generateBtn.innerText = "Generate More";
             generateBtn.disabled = false;
 
-            history.innerHTML += `<div class="chat-bubble bot-bubble">✨ Batch Complete! I've expanded my knowledge across several topics. ${data.details || ''}</div>`;
+            const welcomeBubble = `
+                <div class="chat-bubble bot-bubble" style="background: rgba(168, 199, 250, 0.1); border-color: var(--accent-color);">
+                    <strong>✨ Syllabus Indexed!</strong><br>
+                    I've analyzed your material and generated a batch of variety-rich questions. 
+                    Let's start the evaluation!
+                </div>
+            `;
+            history.innerHTML += welcomeBubble;
 
             fetchPendingQuestions();
-            // Trigger simulation start if it's the first time
             if (!currentSimQuestionId) fetchNextSimQuestion();
         }
+
 
 
     } catch (err) {
