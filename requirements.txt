@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlalchemy
+google-generativeai
+faiss-cpu
+numpy
+python-multipart
+python-dotenv
+openai
+pymupdf
+
+

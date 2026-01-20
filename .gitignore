@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# Database & Index
+*.db
+faiss_index/
+uploads/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Brain/Artifacts (If user doesn't want them on GH)
+.gemini/
+brain/
