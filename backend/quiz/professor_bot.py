@@ -77,19 +77,22 @@ class ProfessorBot:
         default_system = "You are an examiner. Generate short-answer questions based on the provided material."
         
         user_prompt = f"""
-        CONTEXT MATERIAL (Grounded Source):
-        ---
+        [CRITICAL GATING]
+        FOLLOW THESE SYSTEM INSTRUCTIONS EXACTLY:
+        {self.instructions if self.instructions else "Generate a short-answer question."}
+
+        [CONTEXT]
         {chunk.content}
-        ---
 
-        TASK:
-        Generate ONE question based strictly on the context above.
-        If the system instructions specify a format (like MCQ), follow it exactly.
-        If no format is specified, generate a short-answer question.
+        [TASK]
+        1. Generate ONE question strictly based on the context.
+        2. Adhere to the format, themes, and difficulty level specified above.
+        3. If no format is specified, default to Short-Answer.
+        4. If MCQ is requested, provide 4 options (A-D).
 
-        RETURN FORMAT (Strict):
-        Question: <The question text>
-        Ideal Answer: <The correct answer/explanation>
+        [STRICT RETURN FORMAT]
+        Question: <The question text and options if MCQ>
+        Ideal Answer: <The correct answer key and explanation>
         """
 
         system_prompt = self.instructions if self.instructions else default_system
@@ -111,16 +114,20 @@ class ProfessorBot:
 
 
     def _parse_ai_response(self, text: str):
-        """Simple parser for AI-generated assessment content."""
-        q_tag = "Question:"
-        a_tag = "Ideal Answer:"
+        """Robust parser for AI-generated assessment content, handling markdown and flexible tagging."""
+        import re
         
-        q_start = text.find(q_tag)
-        a_start = text.find(a_tag)
+        # Look for "Question:" and "Ideal Answer:" even if inside markdown like **Question:**
+        q_match = re.search(r"(?:Question|QUESTION)[:\s*]+(.*?)(?=(?:Ideal Answer|IDEAL ANSWER)|$)", text, re.DOTALL | re.IGNORECASE)
+        a_match = re.search(r"(?:Ideal Answer|IDEAL ANSWER)[:\s*]+(.*)", text, re.DOTALL | re.IGNORECASE)
         
-        if q_start != -1 and a_start != -1:
-            q_text = text[q_start + len(q_tag):a_start].strip()
-            a_text = text[a_start + len(a_tag):].strip()
+        q_text = q_match.group(1).strip() if q_match else None
+        a_text = a_match.group(1).strip() if a_match else None
+        
+        if q_text and a_text:
+            # Clean up residual markdown if any (like trailing ***)
+            q_text = re.sub(r"\*\*+$", "", q_text).strip()
+            a_text = re.sub(r"\*\*+$", "", a_text).strip()
             return q_text, a_text
             
         return "Failed to parse question.", "Consult source material."

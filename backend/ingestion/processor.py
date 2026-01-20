@@ -1,7 +1,10 @@
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from ..database.models.hierarchy import Chapter, Section, Subsection, RawMaterial
+from ..database.models.question import Question
+from ..database.models.chunk import Chunk
 from ..database.models.course import Course
+from ..rag.embedder import Embedder
 import os
 
 class MaterialProcessor:
@@ -19,6 +22,10 @@ class MaterialProcessor:
         print(f"{'#'*60}")
         
         try:
+            # Step 0: Clear stale data to ensure groundedness
+            self.clear_course_data(course_id)
+            
+            # Step 1: Extraction
             extracted_data = self._extract_structure(file_path, file_type)
             if not extracted_data:
                 print(f"[!] INGESTION ABORTED: No data extracted.")
@@ -132,3 +139,26 @@ class MaterialProcessor:
 
 
 
+    def clear_course_data(self, course_id: int):
+        """Wipes all hierarchical and assessment data for a course to prevent leakage."""
+        print(f"\n[*] CLEANUP: Wiping stale data for Course {course_id}...")
+        
+        # 1. Reset FAISS Index
+        embedder = Embedder(self.db)
+        embedder.reset_index()
+
+        # 2. Clear DB (Hierarchical cascade deletes Sections, Subsections, RawMaterial, and Chunks)
+        chapters = self.db.query(Chapter).filter_by(course_id=course_id).all()
+        for chapter in chapters:
+            # Manually delete questions linked to subsections in this chapter
+            # Question doesn't have a direct cascade from Chapter/Subsection in the models
+            self.db.query(Question).filter(
+                Question.subsection_id.in_(
+                    self.db.query(Subsection.id).join(Section).filter(Section.chapter_id == chapter.id)
+                )
+            ).delete(synchronize_session=False)
+            
+            self.db.delete(chapter)
+        
+        self.db.commit()
+        print("    -> Database cleared.")

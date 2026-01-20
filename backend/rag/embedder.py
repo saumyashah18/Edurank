@@ -64,8 +64,16 @@ class Embedder:
 
     def _save_index(self):
         if not os.path.exists("faiss_index"):
-            os.makedirs("faiss_index")
+            os.makedirs("faiss_index" )
         faiss.write_index(self.index, self.index_path)
+
+    def reset_index(self):
+        """Wipes the FAISS index and deletes the disk cache."""
+        print("[*] Resetting FAISS Vector Index...")
+        self.index = faiss.IndexFlatL2(self.dimension)
+        if os.path.exists(self.index_path):
+            os.remove(self.index_path)
+        print("    -> FAISS Index Cleared.")
 
 class RAGService:
     def __init__(self, db: Session, embedder: Embedder):
