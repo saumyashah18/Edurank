@@ -9,8 +9,10 @@ class Quiz(BaseModel):
     title = Column(String)
     duration_minutes = Column(Integer, default=60)
     total_marks = Column(Integer, default=100)
+    instructions = Column(Text) # System instructions/Prompt gating
     
     transcripts = relationship("Transcript", back_populates="quiz")
+    course = relationship("Course", backref="quizzes")
 
 
 class Transcript(BaseModel):

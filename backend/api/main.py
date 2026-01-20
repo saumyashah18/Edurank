@@ -206,9 +206,15 @@ def rank_question(question_id: int, interaction: str, db: Session = Depends(get_
     return {"status": "Ranked", "upvotes": question.upvotes, "downvotes": question.downvotes}
 
 @app.post("/professor/quiz/create")
-def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, db: Session = Depends(get_db)):
-    """Saves the exam configuration."""
-    quiz = Quiz(course_id=course_id, title=title, duration_minutes=duration, total_marks=total_marks)
+def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, instructions: str = None, db: Session = Depends(get_db)):
+    """Saves the exam configuration including system instructions."""
+    quiz = Quiz(
+        course_id=course_id, 
+        title=title, 
+        duration_minutes=duration, 
+        total_marks=total_marks,
+        instructions=instructions
+    )
     db.add(quiz)
     db.commit()
     return {"quiz_id": quiz.id}

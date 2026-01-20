@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from ..rag.embedder import RAGService
 from ..database.models.chunk import ChunkType, Chunk
 from ..database.models.question import Question, QuestionStatus
+from ..database.models.transcript import Quiz
 from .planner import TopicPlanner
 from .llm_service import llm
 
@@ -12,6 +13,7 @@ class ProfessorBot:
         self.rag_service = rag_service
         self.planner = planner
         self.llm = llm
+        self.instructions = None # To be fetched per course
 
 
 
@@ -21,6 +23,15 @@ class ProfessorBot:
         Batch Generation Flow:
         Iterates through multiple subsections to create a large variety of questions.
         """
+        # Fetch instructions for this course (from the latest quiz config)
+        quiz_config = self.db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
+        self.instructions = quiz_config.instructions if quiz_config else None
+        
+        if self.instructions:
+            print(f"[AI] Using System Instructions: {self.instructions[:50]}...")
+        else:
+            print("[AI] No instructions found. Using default short-answer mode.")
+
         batch_limit = 10 # Process up to 10 subsections per click
         total_generated = 0
         processed_subsections = []
@@ -60,27 +71,33 @@ class ProfessorBot:
 
 
     def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int):
-        # The LLM never sees L text here, only M.
-        prompt = f"""
-        Based ONLY on the following explanation (Medium chunk), generate a short-answer question.
+        """Generates a question grounded in the chunk, following system instructions if provided."""
         
-        Context: {chunk.content}
+        # Default prompt if no instructions are provided
+        default_system = "You are an examiner. Generate short-answer questions based on the provided material."
         
-        Requirement:
-        - Suitable for undergraduate assessment.
-        - Grounded strictly in the text above.
-        
-        Return format:
-        Question: ...
-        Ideal Answer: ...
+        user_prompt = f"""
+        CONTEXT MATERIAL (Grounded Source):
+        ---
+        {chunk.content}
+        ---
+
+        TASK:
+        Generate ONE question based strictly on the context above.
+        If the system instructions specify a format (like MCQ), follow it exactly.
+        If no format is specified, generate a short-answer question.
+
+        RETURN FORMAT (Strict):
+        Question: <The question text>
+        Ideal Answer: <The correct answer/explanation>
         """
-        print(f"DEBUG: Sending prompt to DeepSeek for chunk {chunk.id}...")
-        response_text = self.llm.generate_content(prompt)
-        print(f"DEBUG: DeepSeek Raw Response: {response_text[:100]}...")
+
+        system_prompt = self.instructions if self.instructions else default_system
+
+        print(f"DEBUG: Sending prompt to LLM for chunk {chunk.id}...")
+        response_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt)
+        
         q_text, a_text = self._parse_ai_response(response_text)
-        print(f"DEBUG: Parsed Question: {q_text[:50]}")
-
-
         
         question = Question(
             question_text=q_text,

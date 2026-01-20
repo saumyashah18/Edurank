@@ -13,14 +13,18 @@ class LLMService:
         )
         self.model = "deepseek/deepseek-chat"
 
-    def generate_content(self, prompt: str) -> str:
-        """Generates text content using DeepSeek via OpenRouter."""
+    def generate_content(self, prompt: str, system_prompt: str = None) -> str:
+        """Generates text content using DeepSeek via OpenRouter with optional system instruction."""
         try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            
+            messages.append({"role": "user", "content": prompt})
+
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
+                messages=messages
             )
             return response.choices[0].message.content
         except Exception as e:

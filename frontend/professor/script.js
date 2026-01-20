@@ -189,8 +189,10 @@ async function handleGenerate() {
     generateBtn.disabled = true;
 
     try {
+        const instructions = document.getElementById('exam-instructions').value;
+
         // Step 1: Create/Save Exam Config
-        await fetch(`${API_BASE}/professor/quiz/create?course_id=1&title=${encodeURIComponent(name)}&duration=${duration}&total_marks=${marks}`, {
+        await fetch(`${API_BASE}/professor/quiz/create?course_id=1&title=${encodeURIComponent(name)}&duration=${duration}&total_marks=${marks}&instructions=${encodeURIComponent(instructions)}`, {
             method: 'POST'
         });
 
