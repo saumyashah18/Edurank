@@ -20,52 +20,46 @@ class ProfessorBot:
 
     def generate_questions_for_course(self, course_id: int, total_marks: int = 100):
         """
-        Batch Generation Flow:
-        Iterates through multiple subsections to create a large variety of questions.
+        Initial Warmup Generation:
+        Generates a small batch of questions quickly to get the session started.
+        Bulk of generation now happens Just-in-Time (JIT) during simulation.
         """
-        # Fetch instructions for this course (from the latest quiz config)
+        # Fetch instructions
         quiz_config = self.db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
         self.instructions = quiz_config.instructions if quiz_config else None
-        
-        if self.instructions:
-            print(f"[AI] Using System Instructions: {self.instructions[:50]}...")
-        else:
-            print("[AI] No instructions found. Using default short-answer mode.")
 
-        batch_limit = 10 # Process up to 10 subsections per click
+        batch_limit = 3 # FAST WARMUP: Just 3 topics initially
         total_generated = 0
         processed_subsections = []
 
-        print(f"\n[AI GENERATOR] Batch Start: Targeting {batch_limit} subsections for Course {course_id}")
+        print(f"\n[AI GENERATOR] Fast Warmup: Targeting {batch_limit} topics for Course {course_id}")
 
         for _ in range(batch_limit):
-            # Step 1: Planning (Get a subsection that needs more questions)
-            topic = self.planner.select_next_topic(course_id, student_id=None)
-            if not topic or topic["subsection_id"] in processed_subsections:
-                break
-
-            processed_subsections.append(topic["subsection_id"])
-            print(f"  > Processing Topic: {topic['subsection_title']}...")
-
-            # Step 2: Selection (Medium chunks for planned subsection)
-            m_chunks = self.db.query(Chunk).filter_by(
-                subsection_id=topic["subsection_id"],
-                chunk_type=ChunkType.MEDIUM
-            ).limit(3).all() # Generate ~3 questions per subsection for variety
-
-            if not m_chunks:
-                print(f"    [!] No Medium chunks found for {topic['subsection_title']}. Skipping.")
-                continue
-
-            # Step 3: Generation
-            for chunk in m_chunks:
-                try:
-                    self._create_question_from_m_chunk(chunk, topic["subsection_id"])
-                    total_generated += 1
-                except Exception as e:
-                    print(f"    [!] Generation failed for chunk {chunk.id}: {e}")
+            question = self.generate_single_question(course_id)
+            if question:
+                total_generated += 1
+                processed_subsections.append(question.subsection_id)
         
-        return f"Batch Complete: Generated {total_generated} questions across {len(processed_subsections)} topics."
+        return f"Warmup Complete: Generated {total_generated} questions. Simulation ready."
+
+    def generate_single_question(self, course_id: int):
+        """Generates ONE question synchronously for JIT delivery."""
+        # 1. Planning
+        topic = self.planner.select_next_topic(course_id, student_id=None)
+        if not topic:
+            return None
+
+        # 2. Selection
+        m_chunk = self.db.query(Chunk).filter_by(
+            subsection_id=topic["subsection_id"],
+            chunk_type=ChunkType.MEDIUM
+        ).first() # Grab one for JIT
+
+        if not m_chunk:
+            return None
+
+        # 3. Generation
+        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"])
 
 
 
@@ -111,6 +105,7 @@ class ProfessorBot:
         )
         self.db.add(question)
         self.db.commit()
+        return question
 
 
     def _parse_ai_response(self, text: str):

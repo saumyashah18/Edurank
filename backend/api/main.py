@@ -171,9 +171,19 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Sess
     candidates = list(candidates)
 
     if not candidates:
-        if exclude_list:
-            return {"reset": True, "message": "Syllabus variety cycle complete. Resetting."}
-        raise HTTPException(status_code=404, detail="No assessment content found.")
+        # JIT: No existing pool, try to generate a new one right now!
+        print(f"[*] JIT: Pool empty for course {course_id}. Generating a new candidate...")
+        planner = TopicPlanner(db)
+        rag = RAGService(db, Embedder(db))
+        bot = ProfessorBot(db, rag, planner)
+        
+        new_q = bot.generate_single_question(course_id)
+        if new_q:
+            candidates = [new_q]
+        else:
+            if exclude_list:
+                return {"reset": True, "message": "Syllabus variety cycle complete. Resetting."}
+            raise HTTPException(status_code=404, detail="No assessment content found.")
     
     import random
     random.shuffle(candidates)

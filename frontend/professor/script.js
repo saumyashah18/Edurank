@@ -202,20 +202,13 @@ async function handleGenerate() {
         });
 
         if (response.ok) {
-            generateBtn.innerText = "Generate More";
+            generateBtn.innerText = "Regenerate More";
             generateBtn.disabled = false;
 
-            const welcomeBubble = `
-                <div class="chat-bubble bot-bubble" style="background: rgba(168, 199, 250, 0.1); border-color: var(--accent-color);">
-                    <strong>✨ Syllabus Indexed!</strong><br>
-                    I've analyzed your material and generated a batch of variety-rich questions. 
-                    Let's start the evaluation!
-                </div>
-            `;
-            history.innerHTML += welcomeBubble;
-
-            fetchPendingQuestions();
+            // Scroll simulation into view and trigger first question
+            document.getElementById('simulation-container').scrollIntoView({ behavior: 'smooth' });
             if (!currentSimQuestionId) fetchNextSimQuestion();
+            fetchPendingQuestions();
         }
 
 
