@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #131314;
+  --color-panel: #1e1f20;
+  --color-accent: #a8c7fa;
+  --color-border: #444746;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-gray-200 antialiased;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+}
+
+.gemini-gradient {
+  background: linear-gradient(135deg, rgba(168, 199, 250, 0.1), rgba(168, 199, 250, 0));
+}

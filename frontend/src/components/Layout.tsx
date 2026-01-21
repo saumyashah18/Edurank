@@ -1,0 +1,31 @@
+import React from 'react';
+import { Save } from 'lucide-react';
+import { Button } from './Button';
+
+interface LayoutProps {
+    children: React.ReactNode;
+    title: string;
+    onSave?: () => void;
+    saveLoading?: boolean;
+}
+
+export const Layout: React.FC<LayoutProps> = ({ children, title, onSave, saveLoading }) => {
+    return (
+        <div className="min-h-screen flex flex-col bg-bg overflow-hidden">
+            <header className="flex items-center justify-between px-6 py-3 border-b border-border">
+                <div className="flex items-center gap-3">
+                    <img src="/logo.png" alt="AU Quiz Bot Logo" className="w-8 h-8 object-contain" />
+                    <h1 className="text-xl font-medium text-gray-100">{title}</h1>
+                </div>
+                {onSave && (
+                    <Button icon={Save} loading={saveLoading} onClick={onSave}>
+                        Finalize & Save Assessment
+                    </Button>
+                )}
+            </header>
+            <main className="flex-1 flex overflow-hidden">
+                {children}
+            </main>
+        </div>
+    );
+};

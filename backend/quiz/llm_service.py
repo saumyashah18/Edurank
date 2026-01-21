@@ -24,7 +24,8 @@ class LLMService:
 
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages
+                messages=messages,
+                max_tokens=500
             )
             return response.choices[0].message.content
         except Exception as e:

@@ -4,7 +4,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 
 
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict
 import os
 
 from ..database.session import SessionLocal, init_db
@@ -20,7 +20,7 @@ from ..database.models.hierarchy import Chapter, Section, Subsection, RawMateria
 from ..database.models.transcript import Transcript, Quiz
 
 
-app = FastAPI(title="Edurank AI Assessment System")
+app = FastAPI(title="AU Quiz Bot AI System")
 
 # Enable CORS with explicit null support for local files
 app.add_middleware(
@@ -64,6 +64,41 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 @app.on_event("startup")
 def startup_event():
     init_db()
+
+# --- Auth & User Endpoints ---
+
+@app.post("/auth/register")
+def register_professor(data: dict, db: Session = Depends(get_db)):
+    """Registers a professor with @ahduni.edu.in restriction."""
+    from ..database.models.user import User, UserRole
+    email = data.get("email")
+    if not email or not email.endswith("@ahduni.edu.in"):
+        raise HTTPException(status_code=400, detail="Only @ahduni.edu.in emails allowed")
+    
+    user = db.query(User).filter_by(email=email).first()
+    if not user:
+        user = User(
+            email=email,
+            full_name=data.get("full_name"),
+            firebase_uid=data.get("firebase_uid"),
+            role=UserRole.PROFESSOR
+        )
+        db.add(user)
+        db.commit()
+    return {"status": "success", "user_id": user.id}
+
+@app.get("/professor/assessments")
+def get_professor_assessments(db: Session = Depends(get_db)):
+    """List all assessments for the professor dashboard."""
+    quizzes = db.query(Quiz).all() # Filter by professor in future
+    return [{
+        "id": q.id,
+        "title": q.title,
+        "course_name": q.course.title if q.course else "Unknown Course",
+        "total_questions": q.total_questions,
+        "is_finalized": q.is_finalized == 1,
+        "transcripts_count": len(q.transcripts)
+    } for q in quizzes]
 
 
 # --- Professor Endpoints ---
@@ -138,6 +173,16 @@ def trigger_generation(course_id: int, total_marks: int = 100, db: Session = Dep
     return {"status": "Generation request processed", "details": res}
 
 
+@app.get("/professor/ingestion-status/{course_id}")
+def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
+    """Fetch the progress status of material processing."""
+    from ..database.models.course import Course
+    course = db.query(Course).get(course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return {"status": course.ingestion_status.value}
+
+
 @app.get("/professor/simulate/next")
 def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Session = Depends(get_db)):
     """Fetch a question for simulation/testing with variety and duplicate prevention."""
@@ -155,39 +200,22 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Sess
     # 2. Strategy: Mixed Novelty (Exposure) & Quality (Likes)
     # This addresses "More of such" (Quality) while maintaining coverage (Novelty)
     
-    # Pool A: Novelty - Least seen questions first
-    pool_novelty = query.order_by(
-        (Question.upvotes + Question.downvotes).asc()
-    ).limit(7).all()
+    # Select from Approved or Neutral pool (Simulation history)
+    # Priority: Approved > Neutral
+    pool = query.order_by(Question.status.desc(), (Question.upvotes - Question.downvotes).desc()).limit(15).all()
+    
+    if not pool:
+        # Fallback: If no questions were approved, just grab any from this course
+        pool = db.query(Question).join(Subsection).join(Section).join(Chapter).filter(
+            Chapter.course_id == course_id,
+            ~Question.id.in_(exclude_list)
+        ).limit(10).all()
 
-    # Pool B: Quality - Highly ranked questions (More of such)
-    # We filter by approved and those that have positive sentiment
-    pool_quality = query.filter(Question.upvotes > Question.downvotes).order_by(
-        (Question.upvotes - Question.downvotes).desc()
-    ).limit(7).all()
-
-    # Merge candidates (Unique IDs)
-    candidates = {q.id: q for q in pool_novelty + pool_quality}.values()
-    candidates = list(candidates)
-
-    if not candidates:
-        # JIT: No existing pool, try to generate a new one right now!
-        print(f"[*] JIT: Pool empty for course {course_id}. Generating a new candidate...")
-        planner = TopicPlanner(db)
-        rag = RAGService(db, Embedder(db))
-        bot = ProfessorBot(db, rag, planner)
-        
-        new_q = bot.generate_single_question(course_id)
-        if new_q:
-            candidates = [new_q]
-        else:
-            if exclude_list:
-                return {"reset": True, "message": "Syllabus variety cycle complete. Resetting."}
-            raise HTTPException(status_code=404, detail="No assessment content found.")
+    if not pool:
+        raise HTTPException(status_code=404, detail="The assessment pool is empty. Please ask the professor to 'Generate Questions' first.")
     
     import random
-    random.shuffle(candidates)
-    question = candidates[0]
+    question = random.choice(pool)
         
     return {
         "id": question.id, 
@@ -216,37 +244,69 @@ def rank_question(question_id: int, interaction: str, db: Session = Depends(get_
     return {"status": "Ranked", "upvotes": question.upvotes, "downvotes": question.downvotes}
 
 @app.post("/professor/quiz/create")
-def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, instructions: str = None, db: Session = Depends(get_db)):
+def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: str = None, db: Session = Depends(get_db)):
     """Saves the exam configuration including system instructions."""
     quiz = Quiz(
         course_id=course_id, 
         title=title, 
         duration_minutes=duration, 
         total_marks=total_marks,
+        total_questions=total_questions,
         instructions=instructions
     )
     db.add(quiz)
     db.commit()
     return {"quiz_id": quiz.id}
 
-# --- Student Endpoints ---
+@app.post("/professor/quiz/{quiz_id}/finalize")
+def finalize_quiz(quiz_id: int, password: str, db: Session = Depends(get_db)):
+    """Locks the quiz and sets the access password."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    quiz.password = password
+    quiz.is_finalized = 1
+    db.commit()
+    return {"status": "finalized"}
 
-@app.post("/student/quiz/start/{course_id}")
-def start_quiz(course_id: int, student_id: int, db: Session = Depends(get_db)):
+@app.delete("/professor/quiz/{quiz_id}")
+def delete_quiz(quiz_id: int, db: Session = Depends(get_db)):
+    """Deletes an assessment and its dependencies."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    db.delete(quiz)
+    db.commit()
+    return {"status": "deleted"}
+
+# --- Student Endpoints ---
+@app.get("/student/quiz/{quiz_id}/meta")
+def get_quiz_meta(quiz_id: int, db: Session = Depends(get_db)):
+    """Fetch basic info about a quiz for students (title, duration)."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz or not quiz.is_finalized:
+        raise HTTPException(status_code=404, detail="Quiz not found or not active")
+    return {
+        "title": quiz.title,
+        "duration_minutes": quiz.duration_minutes,
+        "total_questions": quiz.total_questions
+    }
+
+
+@app.post("/student/quiz/start/{quiz_id}")
+def start_quiz(quiz_id: int, data: dict, db: Session = Depends(get_db)):
     """Starts a quiz session using the QuizManager."""
     rag = RAGService(db, Embedder(db))
     eval_svc = EvaluationService(db, rag)
     manager = QuizManager(db, eval_svc)
     
-    quiz_id = manager.start_quiz(course_id, student_id)
+    # Verify password if needed, but for now just register the student start
     return {"quiz_id": quiz_id}
 
 @app.post("/student/quiz/{quiz_id}/submit")
 def submit_answer(
     quiz_id: int, 
-    question_id: int, 
-    answer: str, 
-    student_id: int, 
+    data: dict, 
     db: Session = Depends(get_db)
 ):
     """Submits an answer for evaluation and audit logging."""
@@ -254,13 +314,118 @@ def submit_answer(
     eval_svc = EvaluationService(db, rag)
     manager = QuizManager(db, eval_svc)
     
-    result = manager.submit_answer(student_id, quiz_id, question_id, answer)
+    result = manager.submit_answer(
+        quiz_id=quiz_id,
+        question_id=data.get("question_id"),
+        answer_text=data.get("answer"),
+        student_name=data.get("student_name"),
+        enrollment_id=data.get("enrollment_id")
+    )
     return result
 
 # --- Audit Endpoints ---
 
-@app.get("/professor/transcripts/{course_id}")
-def get_transcripts(course_id: int, db: Session = Depends(get_db)):
-    """Full transcripts for professor review."""
-    transcripts = db.query(Transcript).all() # Simple fetch
-    return transcripts
+@app.get("/student/quiz/{quiz_id}/next-question")
+def get_student_next_question(quiz_id: int, enrollment_id: str, exclude_ids: str = "", db: Session = Depends(get_db)):
+    """Fetch the next adaptive question based on student performance."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    # 1. Fetch Student History (Transcripts)
+    transcripts = db.query(Transcript).filter_by(
+        quiz_id=quiz_id,
+        enrollment_id=enrollment_id
+    ).order_by(Transcript.created_at.desc()).limit(3).all()
+
+    history = []
+    for t in transcripts:
+        history.append({
+            "q": t.question.question_text if t.question else "",
+            "a": t.student_answer
+        })
+
+    # 2. Adaptive Generation JIT (<5s target)
+    planner = TopicPlanner(db)
+    rag = RAGService(db, Embedder(db))
+    bot = ProfessorBot(db, rag, planner)
+    
+    # Pass 15+ pre-generated IDs to avoid direct duplicates, but generate JIT for adaptivity
+    exclude_list = [int(i) for i in exclude_ids.split(",") if i.strip()]
+    
+    # We prefer JIT generation for dialogue but fallback to pool for speed
+    question = bot.generate_single_question(quiz.course_id, history=history)
+    
+    if not question:
+        # Fallback to pool if JIT fails
+        pool = db.query(Question).filter(
+            Question.subsection_id.in_(
+                db.query(Subsection.id).join(Section).join(Chapter).filter(Chapter.course_id == quiz.course_id).scalar_subquery()
+            ),
+            Question.status == QuestionStatus.APPROVED,
+            ~Question.id.in_(exclude_list)
+        ).limit(10).all()
+        if pool:
+            import random
+            question = random.choice(pool)
+
+    if not question:
+        raise HTTPException(status_code=404, detail="Syllabus exhausted.")
+
+    return {
+        "id": question.id, 
+        "text": question.question_text, 
+        "answer": question.ideal_answer, 
+        "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}"
+    }
+
+# --- Audit & Management Endpoints ---
+
+@app.get("/professor/quiz/{quiz_id}/transcripts")
+def list_student_transcripts(quiz_id: int, db: Session = Depends(get_db)):
+    """List all students who have taken this quiz."""
+    transcripts = db.query(Transcript).filter_by(quiz_id=quiz_id).all()
+    # Group by student to show unique participants
+    participants = {}
+    for t in transcripts:
+        key = f"{t.enrollment_id}_{t.student_name}"
+        if key not in participants:
+            participants[key] = {
+                "name": t.student_name,
+                "enrollment_id": t.enrollment_id,
+                "completed_at": t.created_at,
+                "id": t.id # Use one transcript ID as reference
+            }
+    return list(participants.values())
+
+@app.get("/professor/transcript/{transcript_id}/export")
+def export_transcript(transcript_id: int, db: Session = Depends(get_db)):
+    """Exports the full dialogue of a student's assessment session as a TXT file."""
+    base_t = db.query(Transcript).get(transcript_id)
+    if not base_t:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    
+    # Fetch all interactions for this specific student in this quiz
+    all_interactions = db.query(Transcript).filter_by(
+        quiz_id=base_t.quiz_id, 
+        enrollment_id=base_t.enrollment_id
+    ).order_by(Transcript.created_at).all()
+    
+    content = f"--- EDU RANK ASSESSMENT TRANSCRIPT ---\n"
+    content += f"STUDENT: {base_t.student_name}\n"
+    content += f"ENROLLMENT: {base_t.enrollment_id}\n"
+    content += f"QUIZ ID: {base_t.quiz_id}\n"
+    content += f"DATE: {base_t.created_at}\n"
+    content += f"{'='*40}\n\n"
+    
+    for i, t in enumerate(all_interactions):
+        content += f"Q{i+1}: {t.question.question_text if t.question else 'N/A'}\n"
+        content += f"STUDENT: {t.student_answer}\n"
+        content += f"{'-'*40}\n"
+    
+    from fastapi.responses import Response
+    return Response(
+        content=content,
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename=transcript_{base_t.enrollment_id}.txt"}
+    )

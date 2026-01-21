@@ -1,0 +1,97 @@
+import React, { useState } from 'react';
+import { Button } from '../components/Button';
+import { Input } from '../components/Input';
+import { UserCheck, ShieldCheck, PlayCircle } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
+
+export const StudentEntry: React.FC = () => {
+    const [name, setName] = useState('');
+    const [enrollmentId, setEnrollmentId] = useState('');
+    const [password, setPassword] = useState('');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const { quizId } = useParams();
+    const navigate = useNavigate();
+
+    const handleStart = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!name || !enrollmentId || !password) {
+            setError("Please fill in all fields.");
+            return;
+        }
+
+        setLoading(true);
+        try {
+            // In a real app, we'd verify the password and create a session
+            // const res = await client.post(`/student/quiz/${quizId}/auth`, { name, enrollmentId, password });
+
+            // Navigate to the actual quiz with student info in state (simple version)
+            navigate(`/student/quiz/${quizId}/active`, { state: { name, enrollmentId } });
+        } catch (err: any) {
+            setError("Invalid password or assessment not found.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-bg flex items-center justify-center p-6">
+            <div className="w-full max-w-lg bg-panel border border-border p-10 rounded-[40px] shadow-2xl">
+                <div className="flex flex-col items-center text-center gap-4 mb-10">
+                    <div className="w-16 h-16 bg-accent/10 rounded-3xl flex items-center justify-center text-accent">
+                        <UserCheck size={32} />
+                    </div>
+                    <div>
+                        <h2 className="text-3xl font-bold text-gray-100">Student Entry</h2>
+                        <p className="text-gray-400 mt-2">Enter your details to begin the assessment.</p>
+                    </div>
+                </div>
+
+                <form onSubmit={handleStart} className="flex flex-col gap-6">
+                    <div className="space-y-4">
+                        <Input
+                            label="Full Name"
+                            value={name}
+                            onChange={e => setName(e.target.value)}
+                            placeholder="e.g. John Doe"
+                            required
+                        />
+                        <Input
+                            label="Enrollment ID"
+                            value={enrollmentId}
+                            onChange={e => setEnrollmentId(e.target.value)}
+                            placeholder="e.g. AU2100XXX"
+                            required
+                        />
+                        <div className="relative">
+                            <Input
+                                label="Access Password"
+                                type="password"
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                placeholder="Required to start"
+                                required
+                            />
+                            <ShieldCheck className="absolute right-4 top-11 text-gray-600" size={18} />
+                        </div>
+                    </div>
+
+                    {error && (
+                        <div className="p-3 bg-red-400/10 border border-red-400/20 rounded-xl text-red-400 text-sm text-center">
+                            {error}
+                        </div>
+                    )}
+
+                    <Button type="submit" loading={loading} className="w-full py-4 text-lg mt-4" icon={PlayCircle}>
+                        Start Assessment
+                    </Button>
+                </form>
+
+                <p className="text-center text-xs text-gray-500 mt-8">
+                    By starting this assessment, you agree to the university's academic integrity policies.
+                </p>
+            </div>
+        </div>
+    );
+};

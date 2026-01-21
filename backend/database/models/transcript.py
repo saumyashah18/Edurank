@@ -9,6 +9,9 @@ class Quiz(BaseModel):
     title = Column(String)
     duration_minutes = Column(Integer, default=60)
     total_marks = Column(Integer, default=100)
+    total_questions = Column(Integer, default=5)
+    password = Column(String)
+    is_finalized = Column(Integer, default=0) # 0: Draft, 1: Active
     instructions = Column(Text) # System instructions/Prompt gating
     
     transcripts = relationship("Transcript", back_populates="quiz")
@@ -18,7 +21,9 @@ class Quiz(BaseModel):
 class Transcript(BaseModel):
     __tablename__ = "transcripts"
     
-    student_id = Column(Integer, ForeignKey("users.id"))
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    student_name = Column(String)
+    enrollment_id = Column(String)
     quiz_id = Column(Integer, ForeignKey("quizzes.id"))
     question_id = Column(Integer, ForeignKey("questions.id"))
     

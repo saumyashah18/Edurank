@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from ..database.models.hierarchy import Chapter, Section, Subsection, RawMaterial
 from ..database.models.question import Question
 from ..database.models.chunk import Chunk
-from ..database.models.course import Course
+from ..database.models.course import Course, IngestionStatus
 from ..rag.embedder import Embedder
 import os
 
@@ -22,6 +22,12 @@ class MaterialProcessor:
         print(f"{'#'*60}")
         
         try:
+            # Set status to PROCESSING
+            course = self.db.query(Course).get(course_id)
+            if course:
+                course.ingestion_status = IngestionStatus.PROCESSING
+                self.db.commit()
+
             # Step 0: Clear stale data to ensure groundedness
             self.clear_course_data(course_id)
             
@@ -33,12 +39,20 @@ class MaterialProcessor:
                 
             self._store_hierarchy(course_id, extracted_data)
             
+            if course:
+                course.ingestion_status = IngestionStatus.COMPLETED
+                self.db.commit()
+
             duration = time.time() - start_time
             print(f"\n{'='*60}")
             print(f"✅ [SUCCESS] Material Fully Chunked & Indexed in {duration:.2f}s")
             print(f"🔗 View proof: Professor Dashboard (Knowledge Section)")
             print(f"{'='*60}\n")
         except Exception as e:
+            course = self.db.query(Course).get(course_id)
+            if course:
+                course.ingestion_status = IngestionStatus.FAILED
+                self.db.commit()
             print(f"\n❌ [FATAL ERROR] Ingestion Pipeline Failed: {e}")
 
     def _extract_structure(self, file_path: str, file_type: str) -> List[Dict[str, Any]]:

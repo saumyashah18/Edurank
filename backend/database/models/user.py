@@ -9,8 +9,9 @@ class UserRole(enum.Enum):
 class User(BaseModel):
     __tablename__ = "users"
     
-    username = Column(String, unique=True, index=True, nullable=False)
+    username = Column(String, unique=True, index=True, nullable=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    role = Column(Enum(UserRole), default=UserRole.STUDENT)
+    firebase_uid = Column(String, unique=True, index=True)
+    hashed_password = Column(String, nullable=True) # Optional if using Firebase
+    role = Column(Enum(UserRole), default=UserRole.PROFESSOR)
     full_name = Column(String)

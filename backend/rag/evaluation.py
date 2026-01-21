@@ -14,9 +14,10 @@ class EvaluationService:
 
     def evaluate_answer(self, question_text: str, student_answer: str, ideal_answer: str):
         """
-        Evaluates a student answer using Small (S) and Medium (M) chunks.
+        Evaluates a student answer strictly as an Audit / Dialogue record.
+        IMPORTANT: This does NOT vectorize or embed the student's answer into the knowledge base.
         """
-        # Retrieve relevant S and M chunks for context
+        # Retrieve relevant context ONLY (Student answer is used as a search query, not stored in FAISS)
         context_chunks = self.rag_service.retrieve(
             query=student_answer, 
             top_k=5, 

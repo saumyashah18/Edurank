@@ -1,3 +1,4 @@
+from typing import List, Dict
 from sqlalchemy.orm import Session
 from ..rag.embedder import RAGService
 from ..database.models.chunk import ChunkType, Chunk
@@ -20,19 +21,18 @@ class ProfessorBot:
 
     def generate_questions_for_course(self, course_id: int, total_marks: int = 100):
         """
-        Initial Warmup Generation:
-        Generates a small batch of questions quickly to get the session started.
-        Bulk of generation now happens Just-in-Time (JIT) during simulation.
+        Pool Generation Phase:
+        Generates a robust batch of questions to ensure students never hit JIT delays.
         """
         # Fetch instructions
         quiz_config = self.db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
         self.instructions = quiz_config.instructions if quiz_config else None
 
-        batch_limit = 3 # FAST WARMUP: Just 3 topics initially
+        batch_limit = 15 # INCREASED: Ensure a deep pool for variety and throughput
         total_generated = 0
         processed_subsections = []
 
-        print(f"\n[AI GENERATOR] Fast Warmup: Targeting {batch_limit} topics for Course {course_id}")
+        print(f"\n[AI GENERATOR] Pool Generation: Targeting {batch_limit} diverse questions for Course {course_id}")
 
         for _ in range(batch_limit):
             question = self.generate_single_question(course_id)
@@ -40,65 +40,66 @@ class ProfessorBot:
                 total_generated += 1
                 processed_subsections.append(question.subsection_id)
         
-        return f"Warmup Complete: Generated {total_generated} questions. Simulation ready."
+        return f"Pool Ready: Generated {total_generated} diverse questions for the assessment."
 
-    def generate_single_question(self, course_id: int):
-        """Generates ONE question synchronously for JIT delivery."""
-        # 1. Planning
+    def generate_single_question(self, course_id: int, history: List[Dict[str, str]] = None):
+        """Generates ONE question grounded in the chunk, adapted to student history if provided."""
+        # 1. Selection
+        # If we have history, we might want to stay on a topic or move based on performance
         topic = self.planner.select_next_topic(course_id, student_id=None)
         if not topic:
             return None
 
-        # 2. Selection
         m_chunk = self.db.query(Chunk).filter_by(
             subsection_id=topic["subsection_id"],
             chunk_type=ChunkType.MEDIUM
-        ).first() # Grab one for JIT
+        ).first()
 
         if not m_chunk:
             return None
 
-        # 3. Generation
-        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"])
+        # 2. Generation with Adaptive Logic
+        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history)
 
 
 
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int):
-        """Generates a question grounded in the chunk, following system instructions if provided."""
+    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None):
+        """Generates a question following Coursera-style adaptive dialogue logic."""
         
-        # Default prompt if no instructions are provided
         default_system = "You are an examiner. Generate short-answer questions based on the provided material."
         
-        user_prompt = f"""
-        [CRITICAL GATING]
-        FOLLOW THESE SYSTEM INSTRUCTIONS EXACTLY:
-        {self.instructions if self.instructions else "Generate a short-answer question."}
+        # Build history context
+        history_context = ""
+        if history:
+            history_context = "\n### DIALOGUE SO FAR:\n"
+            for turn in history[-3:]: 
+                history_context += f"AI: {turn.get('q')}\nSTUDENT: {turn.get('a')}\n---\n"
 
-        [CONTEXT]
+        user_prompt = f"""
+        [Syllabus Context]
         {chunk.content}
 
-        [TASK]
-        1. Generate ONE question strictly based on the context.
-        2. Adhere to the format, themes, and difficulty level specified above.
-        3. If no format is specified, default to Short-Answer.
-        4. If MCQ is requested, provide 4 options (A-D).
+        [Current Conversation]
+        {history_context}
 
-        [STRICT RETURN FORMAT]
-        Question: <The question text and options if MCQ>
-        Ideal Answer: <The correct answer key and explanation>
+        [Task]
+        You are an AI Examiner. Based on the syllabus context and the student's previous responses, ask the NEXT logical question. 
+        - If the student is knowledgeable, progress to more complex aspects of this topic.
+        - If the student is vague, ask a follow-up to clarify.
+        - DO NOT repeat yourself.
+        - DO NOT provide evaluation, feedback, or answers.
+        - Return ONLY the question text.
         """
 
-        system_prompt = self.instructions if self.instructions else default_system
+        system_prompt = self.instructions if self.instructions else "You are an examiner. Generate the next question."
 
-        print(f"DEBUG: Sending prompt to LLM for chunk {chunk.id}...")
-        response_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt)
-        
-        q_text, a_text = self._parse_ai_response(response_text)
+        print(f"DEBUG: JIT Question Generation for chunk {chunk.id}...")
+        q_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt)
         
         question = Question(
-            question_text=q_text,
-            ideal_answer=a_text,
+            question_text=q_text.strip(),
+            ideal_answer="SOURCE_MATERIAL_REFERENCE", # No longer generating JIT to save time
             status=QuestionStatus.PENDING,
             chunk_id=chunk.id,
             subsection_id=subsection_id
@@ -110,11 +111,12 @@ class ProfessorBot:
 
     def _parse_ai_response(self, text: str):
         """Robust parser for AI-generated assessment content, handling markdown and flexible tagging."""
+        print(f"DEBUG: Raw AI Response:\n{text}\n{'-'*30}")
         import re
         
         # Look for "Question:" and "Ideal Answer:" even if inside markdown like **Question:**
-        q_match = re.search(r"(?:Question|QUESTION)[:\s*]+(.*?)(?=(?:Ideal Answer|IDEAL ANSWER)|$)", text, re.DOTALL | re.IGNORECASE)
-        a_match = re.search(r"(?:Ideal Answer|IDEAL ANSWER)[:\s*]+(.*)", text, re.DOTALL | re.IGNORECASE)
+        q_match = re.search(r"(?:\*\*|#)?\s*(?:Question|QUESTION)[:\s*]+(.*?)(?=(?:\*\*|#)?\s*(?:Ideal Answer|IDEAL ANSWER)|$)", text, re.DOTALL | re.IGNORECASE)
+        a_match = re.search(r"(?:\*\*|#)?\s*(?:Ideal Answer|IDEAL ANSWER)[:\s*]+(.*)", text, re.DOTALL | re.IGNORECASE)
         
         q_text = q_match.group(1).strip() if q_match else None
         a_text = a_match.group(1).strip() if a_match else None
