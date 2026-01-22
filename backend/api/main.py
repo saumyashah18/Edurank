@@ -97,6 +97,7 @@ def get_professor_assessments(db: Session = Depends(get_db)):
         "course_name": q.course.title if q.course else "Unknown Course",
         "total_questions": q.total_questions,
         "is_finalized": q.is_finalized == 1,
+        "password": q.password,
         "transcripts_count": len(q.transcripts)
     } for q in quizzes]
 
@@ -291,6 +292,16 @@ def finalize_quiz(quiz_id: int, password: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "finalized"}
 
+@app.post("/professor/quiz/{quiz_id}/password")
+def update_quiz_password(quiz_id: int, password: str, db: Session = Depends(get_db)):
+    """Updates the access password for a quiz."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    quiz.password = password
+    db.commit()
+    return {"status": "updated", "password": password}
+
 @app.delete("/professor/quiz/{quiz_id}")
 def delete_quiz(quiz_id: int, db: Session = Depends(get_db)):
     """Deletes an assessment and its dependencies."""
@@ -318,12 +329,21 @@ def get_quiz_meta(quiz_id: int, db: Session = Depends(get_db)):
 @app.post("/student/quiz/start/{quiz_id}")
 def start_quiz(quiz_id: int, data: dict, db: Session = Depends(get_db)):
     """Starts a quiz session using the QuizManager."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    
+    # Check password if quiz is finalized
+    if quiz.is_finalized and quiz.password:
+        provided_password = data.get("password")
+        if provided_password != quiz.password:
+            raise HTTPException(status_code=401, detail="Invalid access password")
+
     rag = RAGService(db, Embedder(db))
     eval_svc = EvaluationService(db, rag)
     manager = QuizManager(db, eval_svc)
     
-    # Verify password if needed, but for now just register the student start
-    return {"quiz_id": quiz_id}
+    return {"quiz_id": quiz_id, "status": "authorized"}
 
 @app.post("/student/quiz/{quiz_id}/submit")
 def submit_answer(

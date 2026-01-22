@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
-import { Plus, BookOpen, Users, Settings, Trash2 } from 'lucide-react';
+import { Plus, BookOpen, Users, Settings, Trash2, Copy, Check, Key, Edit2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import client from '../api/client';
@@ -12,6 +12,7 @@ interface Assessment {
     course_name: string;
     total_questions: number;
     is_finalized: boolean;
+    password?: string;
     transcripts_count: number;
 }
 
@@ -20,6 +21,34 @@ export const Dashboard: React.FC = () => {
     const [, setLoading] = useState(true);
     const { user } = useAuth();
     const navigate = useNavigate();
+    const [copiedId, setCopiedId] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (copiedId) {
+            const timer = setTimeout(() => setCopiedId(null), 2000);
+            return () => clearTimeout(timer);
+        }
+    }, [copiedId]);
+
+    const handleCopyLink = (e: React.MouseEvent, id: number) => {
+        e.stopPropagation();
+        const link = `${window.location.origin}/student/quiz/${id}`;
+        navigator.clipboard.writeText(link);
+        setCopiedId(id);
+    };
+
+    const handlePasswordUpdate = async (e: React.MouseEvent, id: number) => {
+        e.stopPropagation();
+        const newPassword = prompt("Enter new access password:");
+        if (newPassword === null) return;
+
+        try {
+            await client.post(`/professor/quiz/${id}/password`, null, { params: { password: newPassword } });
+            setAssessments(prev => prev.map(a => a.id === id ? { ...a, password: newPassword } : a));
+        } catch (err) {
+            alert("Failed to update password");
+        }
+    };
 
     useEffect(() => {
         fetchAssessments();
@@ -84,15 +113,44 @@ export const Dashboard: React.FC = () => {
                                 <h3 className="text-xl font-bold text-gray-100 mb-1">{item.title}</h3>
                                 <p className="text-sm text-gray-400 mb-6">{item.course_name}</p>
 
-                                <div className="flex items-center gap-6 pt-6 border-t border-border mt-auto">
-                                    <div className="flex items-center gap-2 text-gray-400 text-xs font-medium">
-                                        <Settings size={14} />
-                                        {item.total_questions} Questions
+                                <div className="flex flex-col gap-3 pt-6 border-t border-border mt-auto">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-4">
+                                            <div className="flex items-center gap-2 text-gray-400 text-xs font-medium">
+                                                <Settings size={14} />
+                                                {item.total_questions} Qs
+                                            </div>
+                                            <div className="flex items-center gap-2 text-gray-400 text-xs font-medium">
+                                                <Users size={14} />
+                                                {item.transcripts_count} Students
+                                            </div>
+                                        </div>
+                                        {item.is_finalized && (
+                                            <div
+                                                onClick={(e) => handlePasswordUpdate(e, item.id)}
+                                                className="flex items-center gap-2 text-accent/80 hover:text-accent text-xs font-bold cursor-pointer transition-colors"
+                                            >
+                                                <Key size={14} />
+                                                <span>{item.password || 'Set Pass'}</span>
+                                                <Edit2 size={10} className="opacity-40" />
+                                            </div>
+                                        )}
                                     </div>
-                                    <div className="flex items-center gap-2 text-gray-400 text-xs font-medium">
-                                        <Users size={14} />
-                                        {item.transcripts_count} Students
-                                    </div>
+
+                                    {item.is_finalized && (
+                                        <div
+                                            onClick={(e) => handleCopyLink(e, item.id)}
+                                            className={`flex items-center justify-between p-3 rounded-xl transition-all cursor-pointer ${copiedId === item.id ? 'bg-green-400/10 border border-green-400/20' : 'bg-white/[0.03] border border-white/5 hover:bg-white/[0.06]'}`}
+                                        >
+                                            <div className="flex flex-col gap-0.5 overflow-hidden">
+                                                <span className="text-[9px] uppercase font-bold tracking-widest text-gray-500">Access Link</span>
+                                                <span className="text-xs text-gray-400 truncate w-[180px]">{window.location.origin}/student/quiz/{item.id}</span>
+                                            </div>
+                                            <div className={`${copiedId === item.id ? 'text-green-400' : 'text-accent'}`}>
+                                                {copiedId === item.id ? <Check size={16} /> : <Copy size={16} />}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="absolute bottom-6 right-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">

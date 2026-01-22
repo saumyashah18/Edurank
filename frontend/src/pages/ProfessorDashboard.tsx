@@ -37,6 +37,7 @@ export const ProfessorDashboard: React.FC = () => {
     const [isFinalizing, setIsFinalizing] = useState(false);
     const [quizPassword, setQuizPassword] = useState('');
     const [finalLink, setFinalLink] = useState('');
+    const [currentQuizId, setCurrentQuizId] = useState<number | null>(null);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
@@ -93,7 +94,7 @@ export const ProfessorDashboard: React.FC = () => {
 
         setIsGenerating(true);
         try {
-            await client.post(`/professor/quiz/create`, null, {
+            const res = await client.post(`/professor/quiz/create`, null, {
                 params: {
                     course_id: 1,
                     title: examName,
@@ -103,6 +104,7 @@ export const ProfessorDashboard: React.FC = () => {
                     total_questions: totalQuestions
                 }
             });
+            setCurrentQuizId(res.data.quiz_id);
             await client.post(`/professor/generate/1`, null, { params: { total_marks: marks } });
             await fetchNextQuestion();
         } catch (err) {
@@ -159,7 +161,6 @@ export const ProfessorDashboard: React.FC = () => {
         // Construct history: q|a,q|a
         // We only send the last few turns to keep it efficient
         const historyPairs: string[] = [];
-        const recentMessages = messages.slice(-4); // Get last 4 messages to extract turns
 
         // This is a bit simplified, but for simulation it works
         if (lastBotMsg) {
@@ -173,8 +174,9 @@ export const ProfessorDashboard: React.FC = () => {
         if (!quizPassword) return alert("Please set a password for the student link.");
 
         try {
-            await client.post(`/professor/quiz/1/finalize`, null, { params: { password: quizPassword } });
-            setFinalLink(`${window.location.origin}/student/quiz/1`); // Mock ID 1
+            const quizId = currentQuizId || 1; // Fallback to 1 if not set
+            await client.post(`/professor/quiz/${quizId}/finalize`, null, { params: { password: quizPassword } });
+            setFinalLink(`${window.location.origin}/student/quiz/${quizId}`);
         } catch (err) {
             alert("Finalization failed");
         }

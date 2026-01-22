@@ -3,6 +3,7 @@ import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { ShieldCheck, PlayCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
+import client from '../api/client';
 
 export const StudentEntry: React.FC = () => {
     const [name, setName] = useState('');
@@ -23,13 +24,14 @@ export const StudentEntry: React.FC = () => {
 
         setLoading(true);
         try {
-            // In a real app, we'd verify the password and create a session
-            // const res = await client.post(`/student/quiz/${quizId}/auth`, { name, enrollmentId, password });
-
-            // Navigate to the actual quiz with student info in state (simple version)
+            await client.post(`/student/quiz/start/${quizId}`, { name, enrollmentId, password });
             navigate(`/student/quiz/${quizId}/active`, { state: { name, enrollmentId } });
         } catch (err: any) {
-            setError("Invalid password or assessment not found.");
+            if (err.response?.status === 401) {
+                setError("Incorrect access password. Please contact your professor.");
+            } else {
+                setError("Assessment not found or connection error.");
+            }
         } finally {
             setLoading(false);
         }
@@ -58,14 +60,14 @@ export const StudentEntry: React.FC = () => {
                             label="Full Name"
                             value={name}
                             onChange={e => setName(e.target.value)}
-                            placeholder="e.g. John Doe"
+                            placeholder="e.g. Suryaraj Sinh Jadeja"
                             required
                         />
                         <Input
                             label="Enrollment ID"
                             value={enrollmentId}
                             onChange={e => setEnrollmentId(e.target.value)}
-                            placeholder="e.g. AU2100XXX"
+                            placeholder="e.g. AU2XXXXXXX"
                             required
                         />
                         <div className="relative">
