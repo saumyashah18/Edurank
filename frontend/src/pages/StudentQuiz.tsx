@@ -128,9 +128,9 @@ export const StudentQuiz: React.FC = () => {
                     <p className="text-gray-400 max-w-md">
                         Thank you, {studentInfo?.name}. Your responses have been recorded and sent to your professor.
                     </p>
-                    <Button variant="secondary" onClick={() => window.location.href = '/'} className="mt-4">
-                        Exit Assessment
-                    </Button>
+                    <p className="text-gray-500 text-sm mt-4">
+                        You may now close this window safely.
+                    </p>
                 </div>
             </Layout>
         );

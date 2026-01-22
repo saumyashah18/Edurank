@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
-import { UserCheck, ShieldCheck, PlayCircle } from 'lucide-react';
+import { ShieldCheck, PlayCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 export const StudentEntry: React.FC = () => {
@@ -39,8 +39,12 @@ export const StudentEntry: React.FC = () => {
         <div className="min-h-screen bg-bg flex items-center justify-center p-6">
             <div className="w-full max-w-lg bg-panel border border-border p-10 rounded-[40px] shadow-2xl">
                 <div className="flex flex-col items-center text-center gap-4 mb-10">
-                    <div className="w-16 h-16 bg-accent/10 rounded-3xl flex items-center justify-center text-accent">
-                        <UserCheck size={32} />
+                    <div className="w-20 h-20 flex items-center justify-center">
+                        <img
+                            src="/logo.png"
+                            alt="AU Quiz Bot Logo"
+                            className="w-full h-full object-contain mix-blend-screen"
+                        />
                     </div>
                     <div>
                         <h2 className="text-3xl font-bold text-gray-100">Student Entry</h2>

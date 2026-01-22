@@ -56,8 +56,12 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
         <div className="min-h-screen bg-bg flex items-center justify-center p-6">
             <div className="w-full max-w-md bg-panel border border-border p-8 rounded-[32px] shadow-2xl">
                 <div className="flex flex-col items-center gap-4 mb-8">
-                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center overflow-hidden">
-                        <img src="/logo.png" alt="AU Quiz Bot Logo" className="w-full h-full object-contain" />
+                    <div className="w-20 h-20 flex items-center justify-center">
+                        <img
+                            src="/logo.png"
+                            alt="AU Quiz Bot Logo"
+                            className="w-full h-full object-contain mix-blend-screen"
+                        />
                     </div>
                     <h1 className="text-2xl font-bold text-gray-100">AU Quiz Bot</h1>
                     <p className="text-gray-400 text-sm">Professor {mode === 'login' ? 'Sign In' : 'Registration'}</p>
