@@ -35,21 +35,33 @@ class ProfessorBot:
         print(f"\n[AI GENERATOR] Pool Generation: Targeting {batch_limit} diverse questions for Course {course_id}")
 
         for _ in range(batch_limit):
-            question = self.generate_single_question(course_id)
+            # Pass is_simulation=False to ensure we generate actual questions for the pool
+            question = self.generate_single_question(course_id, is_simulation=False)
             if question:
                 total_generated += 1
                 processed_subsections.append(question.subsection_id)
         
         return f"Pool Ready: Generated {total_generated} diverse questions for the assessment."
 
-    def generate_single_question(self, course_id: int, history: List[Dict[str, str]] = None):
+    def generate_single_question(self, course_id: int, history: List[Dict[str, str]] = None, is_simulation: bool = True):
         """Generates ONE question grounded in the chunk, adapted to student history if provided."""
-        # 1. Selection
-        # If we have history, we might want to stay on a topic or move based on performance
-        topic = self.planner.select_next_topic(course_id, student_id=None)
+        print(f"DEBUG: generate_single_question - is_simulation: {is_simulation}, history_len: {len(history) if history else 0}")
+        # Phase 0: Introduction & Preference
+        # Only trigger for simulations with no history
+        if is_simulation and (not history or len(history) < 1):
+            print("DEBUG: generate_single_question -> Phase 0 Greeting")
+            return self._generate_opening_greeting(course_id)
+
+        # 1. Phase Detection & Topic Selection
+        history_len = len(history) if history else 0
+        current_phase = self._determine_phase(history_len)
+        
+        # 2. Topic Selection with Diversity
+        topic = self.planner.select_next_topic(course_id, student_id=None, history=history)
         if not topic:
             return None
 
+        # Primary Chunk
         m_chunk = self.db.query(Chunk).filter_by(
             subsection_id=topic["subsection_id"],
             chunk_type=ChunkType.MEDIUM
@@ -58,61 +70,128 @@ class ProfessorBot:
         if not m_chunk:
             return None
 
-        # 2. Generation with Adaptive Logic
-        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history)
-
-
-
-
-    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None):
-        """Generates a question following Coursera-style adaptive dialogue logic."""
+        # Graph-Aware Retrieval (Knowledge Relations)
+        related_chunks = self._fetch_graph_relations(m_chunk.id)
         
-        default_system = "You are an examiner. Generate short-answer questions based on the provided material."
+        # 3. Optional Comparison Chunk (Mandatory in Phase 2 for Diversity)
+        comparison_chunk = None
+        if current_phase == "PHASE_2_CONNECTION":
+            comparison_chunk = self._fetch_comparison_chunk(course_id, exclude_subsection_id=topic["subsection_id"])
+
+        # 4. Generation with Phase Awareness
+        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history, comparison_chunk, related_chunks, current_phase)
+
+    def _determine_phase(self, history_len: int):
+        """Maps history length to the user's requested conversation arc."""
+        if history_len <= 3:
+            return "PHASE_1_COMPREHENSION"
+        elif history_len <= 6:
+            return "PHASE_2_CONNECTION"
+        else:
+            return "PHASE_3_CRITIQUE"
+
+    def _fetch_graph_relations(self, chunk_id: int):
+        """Fetches chunks connected via explicit KnowledgeRelation graph."""
+        from ..database.models.chunk import KnowledgeRelation
+        relations = self.db.query(KnowledgeRelation).filter_by(source_id=chunk_id).limit(2).all()
+        return [self.db.query(Chunk).get(rel.target_id) for rel in relations]
+
+    def _generate_opening_greeting(self, course_id: int):
+        """Generates a conversational opening asking for student interest."""
+        # We don't save this as a 'Question' in DB yet, or we save it as a meta-question
+        # For simplicity, let's return a dummy question object or just the text
+        q_text = "Hello! I'm your examiner for this course. Before we dive into the material, which author or specific topic from the syllabus did you find most compelling or challenging?"
+        
+        question = Question(
+            question_text=q_text,
+            ideal_answer="WAITING_FOR_PREFERENCE",
+            status=QuestionStatus.PENDING,
+            chunk_id=None,
+            subsection_id=None
+        )
+        self.db.add(question)
+        self.db.commit()
+        return question
+
+    def _detect_author_preference(self, history: List[Dict[str, str]]):
+        """Simple heuristic to detect author names in early history."""
+        # For now, just look for common names if the history is 1 turn deep
+        if not history: return None
+        first_user_msg = history[0].get('a', '').lower()
+        # This could be expanded with a list of authors from DB metadata
+        return None 
+
+    def _fetch_comparison_chunk(self, course_id: int, exclude_subsection_id: int):
+        """Fetches a chunk from a different part of the syllabus for comparison."""
+        comparison_topic = self.planner.select_next_topic(course_id, student_id=None)
+        if comparison_topic and comparison_topic["subsection_id"] != exclude_subsection_id:
+            return self.db.query(Chunk).filter_by(
+                subsection_id=comparison_topic["subsection_id"],
+                chunk_type=ChunkType.MEDIUM
+            ).first()
+        return None
+
+    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None, comparison_chunk: Chunk = None, related_chunks: List[Chunk] = None, phase: str = "PHASE_1_COMPREHENSION"):
+        """Generates a question following Coursera-style adaptive dialogue logic."""
         
         # Build history context
         history_context = ""
         if history:
             history_context = "\n### DIALOGUE SO FAR:\n"
-            for turn in history[-3:]: 
+            for turn in history[-4:]: 
                 history_context += f"AI: {turn.get('q')}\nSTUDENT: {turn.get('a')}\n---\n"
 
-        user_prompt = f"""
-        [Syllabus Context]
-        {chunk.content}
+        comparison_context = ""
+        if comparison_chunk:
+            comparison_context = f"\n### SECONDARY AUTHOR/CONTEXT (For PH2 Connection):\n{comparison_chunk.content}\n"
 
-        [Current Conversation]
+        graph_context = ""
+        if related_chunks:
+            graph_context = "\n### KNOWLEDGE GRAPH RELATIONS (Connected Concepts):\n"
+            for rc in related_chunks:
+                graph_context += f"- RELATED CONCEPT: {rc.content[:200]}...\n"
+
+        # 5. Detect recently used themes to avoid repetition
+        used_themes = []
+        if history:
+            all_text = " ".join([turn.get('q', '') for turn in history])
+            for theme in ["YouTube", "Anderson", "Facebook", "Globalization"]:
+                if theme.lower() in all_text.lower():
+                    used_themes.append(theme)
+        
+        avoid_instruction = ""
+        if used_themes:
+            avoid_instruction = f"AVOID REPEATING THESE THEMES: {', '.join(used_themes)} unless essential."
+
+        user_prompt = f"""
+        [ADAPTIVE CONTEXT]
+        PHASE: {phase}
+        {avoid_instruction}
+        
+        [SOURCE MATERIALS]
+        PRIMARY: {chunk.content}
+        {comparison_context}
+        {graph_context}
+
+        [CONVERSATION HISTORY]
         {history_context}
 
-        [Task]
-        You are an AI Examiner. Based on the syllabus context and the student's previous responses, ask the NEXT logical question. 
-        - If the student is knowledgeable, progress to more complex aspects of this topic.
-        - If the student is vague, ask a follow-up to clarify.
-        - DO NOT repeat yourself.
-        - DO NOT provide evaluation, feedback, or answers.
-        - Return ONLY the question text.
+        [INSTRUCTION]
+        You are in {phase}. 
+        Following your system instructions, generate the next Professor response. 
+        Focus strictly on the syllabus material and do not repeat themes already discussed.
         """
 
-        system_prompt = self.instructions if self.instructions else "You are an examiner. Generate the next question."
+        system_prompt = self.instructions if self.instructions else "You are an examiner. Generate a sharp, short-answer question based on the material."
 
-        print(f"DEBUG: JIT Question Generation for chunk {chunk.id}...")
+        print(f"DEBUG: Adaptive Generation for chunk {chunk.id} (Comparison: {bool(comparison_chunk)})")
         q_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
         
-        # Prepend transition if history exists
-        if history:
-            import random
-            transitions = [
-                "I see. Moving forward,",
-                "That makes sense. Let's explore further:",
-                "Alright, let's look at the next aspect:",
-                "Got it. Here is the next question for you:",
-                "Understood. Let's dive deeper:",
-                "Good. Now, consider this:"
-            ]
-            q_text = f"{random.choice(transitions)} {q_text}"
+        # NO MORE hardcoded transitions here. Let the persona handle it.
 
         question = Question(
             question_text=q_text,
-            ideal_answer="SOURCE_MATERIAL_REFERENCE", # No longer generating JIT to save time
+            ideal_answer="SOURCE_MATERIAL_REFERENCE",
             status=QuestionStatus.PENDING,
             chunk_id=chunk.id,
             subsection_id=subsection_id

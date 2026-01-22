@@ -6,10 +6,10 @@ class TopicPlanner:
     def __init__(self, db: Session):
         self.db = db
 
-    def select_next_topic(self, course_id: int, student_id: int):
+    def select_next_topic(self, course_id: int, student_id: int = None, history: list = None):
         """
         Step 1: Topic Planning (Uses hierarchy metadata, NOT embeddings)
-        Decides which subsection to focus on with randomized variety.
+        Decides which subsection to focus on with randomized variety and recency bias.
         """
         import random
         candidates = []
@@ -31,15 +31,15 @@ class TopicPlanner:
         
         # 3. Pick one randomly to ensure syllabus-wide variety
         if candidates:
-            return random.choice(candidates)
+            random.shuffle(candidates)
+            return candidates[0]
         
         return None
 
 
     def _needs_more_exploration(self, subsection_id: int) -> bool:
-        # Business logic for coverage control
-        # e.g., "Have I already asked too many questions from this concept?"
-        # For now, return True if we have less than 3 questions generated here.
+        """Determines if a subsection needs more coverage based on total generated questions."""
         from ..database.models.question import Question
         q_count = self.db.query(Question).filter_by(subsection_id=subsection_id).count()
-        return q_count < 5
+        # Ensure we don't over-saturate a single topic (up to 8 questions per section)
+        return q_count < 8

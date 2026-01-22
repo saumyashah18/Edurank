@@ -22,7 +22,7 @@ def init_db():
     from .models.user import User
     from .models.course import Course
     from .models.hierarchy import Chapter, Section, Subsection, RawMaterial
-    from .models.chunk import Chunk
+    from .models.chunk import Chunk, KnowledgeRelation
     from .models.question import Question
     from .models.transcript import Quiz, Transcript
     

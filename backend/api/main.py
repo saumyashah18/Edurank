@@ -186,8 +186,6 @@ def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
 @app.get("/professor/simulate/next")
 def get_next_simulation_question(course_id: int, exclude_ids: str = "", history: str = "", db: Session = Depends(get_db)):
     """Fetch a question for simulation/testing with variety and adaptive history support."""
-    exclude_list = [int(i) for i in exclude_ids.split(",") if i.strip()]
-    
     # Parse history if provided (format: q|a,q|a)
     parsed_history = []
     if history:
@@ -196,59 +194,28 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", history:
                 q, a = turn.split("|", 1)
                 parsed_history.append({"q": q, "a": a})
 
-    # If we have history, try JIT generation for adaptivity
-    if parsed_history:
-        planner = TopicPlanner(db)
-        rag = RAGService(db, Embedder(db))
-        bot = ProfessorBot(db, rag, planner)
-        
-        # Fetch instructions for this course (from existing quiz)
-        quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
-        bot.instructions = quiz_config.instructions if quiz_config else None
-        
-        question = bot.generate_single_question(course_id, history=parsed_history)
-        if question:
-            return {
-                "id": question.id, 
-                "text": question.question_text, 
-                "answer": question.ideal_answer, 
-                "status": question.status.value,
-                "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Simulation"
-            }
-
-    # Fallback/Default: Pool Strategy (Novelty & Quality)
-    query = db.query(Question).filter(
-        Question.subsection_id.in_(
-            db.query(Subsection.id).join(Section).join(Chapter).filter(Chapter.course_id == course_id).scalar_subquery()
-        ),
-        Question.status.in_([QuestionStatus.APPROVED, QuestionStatus.PENDING]),
-        ~Question.id.in_(exclude_list)
-    )
+    # Always use the Adaptive Bot Strategy for Simulation
+    planner = TopicPlanner(db)
+    rag = RAGService(db, Embedder(db))
+    bot = ProfessorBot(db, rag, planner)
     
-    pool = query.order_by(Question.status.desc(), (Question.upvotes - Question.downvotes).desc()).limit(15).all()
+    # Fetch instructions for this course (from existing quiz)
+    quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
+    bot.instructions = quiz_config.instructions if quiz_config else None
     
-    if not pool:
-        pool = db.query(Question).join(Subsection).join(Section).join(Chapter).filter(
-            Chapter.course_id == course_id,
-            ~Question.id.in_(exclude_list)
-        ).limit(10).all()
-
-    if not pool:
-        raise HTTPException(status_code=404, detail="The assessment pool is empty. Please ask the professor to 'Generate Questions' first.")
+    # generate_single_question now handles Phase 0 (Greeting) and Graph-RAG
+    question = bot.generate_single_question(course_id, history=parsed_history, is_simulation=True)
     
-    import random
-    question = random.choice(pool)
-        
-    return {
-        "id": question.id, 
-        "text": question.question_text, 
-        "answer": question.ideal_answer, 
-        "status": question.status.value,
-        "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}"
-    }
+    if question:
+        return {
+            "id": question.id, 
+            "text": question.question_text, 
+            "answer": question.ideal_answer, 
+            "status": question.status.value,
+            "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Simulation"
+        }
 
-
-
+    raise HTTPException(status_code=404, detail="The bot was unable to generate a question. Please ensure syllabus data exists.")
 
 @app.post("/professor/questions/{question_id}/rank")
 def rank_question(question_id: int, interaction: str, db: Session = Depends(get_db)):
@@ -345,8 +312,6 @@ def submit_answer(
     )
     return result
 
-# --- Audit Endpoints ---
-
 @app.get("/student/quiz/{quiz_id}/next-question")
 def get_student_next_question(quiz_id: int, enrollment_id: str, exclude_ids: str = "", db: Session = Depends(get_db)):
     """Fetch the next adaptive question based on student performance."""
@@ -398,7 +363,7 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, exclude_ids: str
         "id": question.id, 
         "text": question.question_text, 
         "answer": question.ideal_answer, 
-        "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}"
+        "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Quiz"
     }
 
 # --- Audit & Management Endpoints ---

@@ -78,29 +78,32 @@ class MaterialProcessor:
                 if not full_text:
                     return []
 
-                # Logical splitting: Every 5000 chars is a 'Chapter'
+                # ACCURACY FIX: Group pages instead of arbitrary character counts
                 chapters = []
-                chunk_size = 5000
-                total_len = len(full_text)
+                pages_per_chapter = 5 # Group every 5 pages into a logical chapter
                 
-                for i in range(0, total_len, chunk_size):
-                    chunk = full_text[i:i+chunk_size]
-                    chap_num = (i // chunk_size) + 1
+                for i in range(0, total_pages, pages_per_chapter):
+                    end_page = min(i + pages_per_chapter, total_pages)
+                    chapter_text = ""
+                    for p_num in range(i, end_page):
+                        chapter_text += doc[p_num].get_text()
+                    
+                    chap_num = (i // pages_per_chapter) + 1
                     chapters.append({
-                        "title": f"Chapter {chap_num} (Extracted Content)",
+                        "title": f"Chapter {chap_num} (Pages {i+1}-{end_page})",
                         "order": chap_num,
                         "sections": [{
                             "title": f"Section {chap_num}.1",
                             "order": 1,
                             "subsections": [{
-                                "title": f"Subsection {chap_num}.1.1",
+                                "title": f"Content Block {chap_num}.1.1",
                                 "order": 1,
-                                "content": chunk
+                                "content": chapter_text
                             }]
                         }]
                     })
                 
-                print(f"    -> SUCCESS: Mapped text to {len(chapters)} Chapters.")
+                print(f"    -> ACCURACY UPGRADE: Mapped {total_pages} pages into {len(chapters)} logical Chapters.")
                 return chapters
         except Exception as e:
             print(f"    [!] FAILED: PDF extraction error: {e}")
