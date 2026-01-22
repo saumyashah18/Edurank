@@ -55,11 +55,14 @@ def get_db():
     finally:
         db.close()
 
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# The new google-genai SDK uses client-based configuration.
+# We'll initialize a client here to ensure the API key is valid, 
+# although it's not currently used in this file.
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 @app.on_event("startup")
 def startup_event():
