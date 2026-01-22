@@ -42,21 +42,15 @@ class ProfessorBot:
                 processed_subsections.append(question.subsection_id)
         
         return f"Pool Ready: Generated {total_generated} diverse questions for the assessment."
-
     def generate_single_question(self, course_id: int, history: List[Dict[str, str]] = None, is_simulation: bool = True):
         """Generates ONE question grounded in the chunk, adapted to student history if provided."""
-        print(f"DEBUG: generate_single_question - is_simulation: {is_simulation}, history_len: {len(history) if history else 0}")
-        # Phase 0: Introduction & Preference
-        # Only trigger for simulations with no history
-        if is_simulation and (not history or len(history) < 1):
-            print("DEBUG: generate_single_question -> Phase 0 Greeting")
-            return self._generate_opening_greeting(course_id)
-
-        # 1. Phase Detection & Topic Selection
+        
+        # 1. Turn Detection & Topic Selection
         history_len = len(history) if history else 0
-        current_phase = self._determine_phase(history_len)
+        turn_count = history_len + 1
         
         # 2. Topic Selection with Diversity
+        # We let the instructions (system prompt) guide the starting point/arc.
         topic = self.planner.select_next_topic(course_id, student_id=None, history=history)
         if not topic:
             return None
@@ -73,45 +67,19 @@ class ProfessorBot:
         # Graph-Aware Retrieval (Knowledge Relations)
         related_chunks = self._fetch_graph_relations(m_chunk.id)
         
-        # 3. Optional Comparison Chunk (Mandatory in Phase 2 for Diversity)
-        comparison_chunk = None
-        if current_phase == "PHASE_2_CONNECTION":
-            comparison_chunk = self._fetch_comparison_chunk(course_id, exclude_subsection_id=topic["subsection_id"])
+        # 3. Optional Comparison Chunk (The 'Compendium Linkage')
+        # We always try to provide one to the LLM if available, 
+        # allowing it to follow the "bridge two readings" instruction if requested.
+        comparison_chunk = self._fetch_comparison_chunk(course_id, exclude_subsection_id=topic["subsection_id"])
 
-        # 4. Generation with Phase Awareness
-        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history, comparison_chunk, related_chunks, current_phase)
-
-    def _determine_phase(self, history_len: int):
-        """Maps history length to the user's requested conversation arc."""
-        if history_len <= 3:
-            return "PHASE_1_COMPREHENSION"
-        elif history_len <= 6:
-            return "PHASE_2_CONNECTION"
-        else:
-            return "PHASE_3_CRITIQUE"
+        # 4. Generation: Strictly Instruction-Led
+        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history, comparison_chunk, related_chunks, turn_count, is_simulation=is_simulation)
 
     def _fetch_graph_relations(self, chunk_id: int):
         """Fetches chunks connected via explicit KnowledgeRelation graph."""
         from ..database.models.chunk import KnowledgeRelation
         relations = self.db.query(KnowledgeRelation).filter_by(source_id=chunk_id).limit(2).all()
         return [self.db.query(Chunk).get(rel.target_id) for rel in relations]
-
-    def _generate_opening_greeting(self, course_id: int):
-        """Generates a conversational opening asking for student interest."""
-        # We don't save this as a 'Question' in DB yet, or we save it as a meta-question
-        # For simplicity, let's return a dummy question object or just the text
-        q_text = "Hello! I'm your examiner for this course. Before we dive into the material, which author or specific topic from the syllabus did you find most compelling or challenging?"
-        
-        question = Question(
-            question_text=q_text,
-            ideal_answer="WAITING_FOR_PREFERENCE",
-            status=QuestionStatus.PENDING,
-            chunk_id=None,
-            subsection_id=None
-        )
-        self.db.add(question)
-        self.db.commit()
-        return question
 
     def _detect_author_preference(self, history: List[Dict[str, str]]):
         """Simple heuristic to detect author names in early history."""
@@ -131,8 +99,8 @@ class ProfessorBot:
             ).first()
         return None
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None, comparison_chunk: Chunk = None, related_chunks: List[Chunk] = None, phase: str = "PHASE_1_COMPREHENSION"):
-        """Generates a question following Coursera-style adaptive dialogue logic."""
+    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None, comparison_chunk: Chunk = None, related_chunks: List[Chunk] = None, turn_count: int = 1, is_simulation: bool = True):
+        """Generates a question following structural or conversational logic."""
         
         # Build history context
         history_context = ""
@@ -143,7 +111,7 @@ class ProfessorBot:
 
         comparison_context = ""
         if comparison_chunk:
-            comparison_context = f"\n### SECONDARY AUTHOR/CONTEXT (For PH2 Connection):\n{comparison_chunk.content}\n"
+            comparison_context = f"\n### SECONDARY AUTHOR/CONTEXT (For Connection/Bridge):\n{comparison_chunk.content}\n"
 
         graph_context = ""
         if related_chunks:
@@ -155,18 +123,32 @@ class ProfessorBot:
         used_themes = []
         if history:
             all_text = " ".join([turn.get('q', '') for turn in history])
-            for theme in ["YouTube", "Anderson", "Facebook", "Globalization"]:
+            # Expanded list of authors/themes based on syllabus ingestion
+            syllabus_themes = ["YouTube", "Chatterjee", "Said", "Scott", "Held", "Anderson", "Fanon", "Facebook", "Globalization"]
+            for theme in syllabus_themes:
                 if theme.lower() in all_text.lower():
                     used_themes.append(theme)
         
         avoid_instruction = ""
         if used_themes:
-            avoid_instruction = f"AVOID REPEATING THESE THEMES: {', '.join(used_themes)} unless essential."
+            avoid_instruction = f"AVOID REPEATING THESE THEMES (Recently discussed): {', '.join(used_themes)}. Explore OTHER aspects of the syllabus unless specifically directed by the user's system instructions to stay on a topic."
+
+        # MODE-SPECIFIC PROMPT
+        if not is_simulation:
+            # POOL GENERATION MODE: Needs structural parsing
+            prompt_goal = "Generate a sharp assessment question and an ideal answer based on the material."
+            additional_constraints = "FORMAT: Question: [text] Ideal Answer: [short sentence summary]."
+        else:
+            # SIMULATION MODE: Conversational
+            prompt_goal = f"Respond as the Professor. Current Turn: {turn_count}."
+            additional_constraints = "Do NOT provide an 'Ideal Answer'. Simply speak to the student."
 
         user_prompt = f"""
         [ADAPTIVE CONTEXT]
-        PHASE: {phase}
+        TURN_COUNT: {turn_count}
         {avoid_instruction}
+        IS_START_OF_CONVERSATION: {bool(turn_count == 1)}
+        MODE: {"Simulation" if is_simulation else "Pool Generation"}
         
         [SOURCE MATERIALS]
         PRIMARY: {chunk.content}
@@ -177,21 +159,28 @@ class ProfessorBot:
         {history_context}
 
         [INSTRUCTION]
-        You are in {phase}. 
-        Following your system instructions, generate the next Professor response. 
-        Focus strictly on the syllabus material and do not repeat themes already discussed.
+        {prompt_goal}
+        {additional_constraints}
+        
+        STRICTLY follow your system instructions for tone, behavior, and structural goals.
+        If your system instructions specify a specific arc (e.g., Phase 1, 2, 3), apply the rule corresponding to TURN_COUNT {turn_count}.
+        Ground your response in the provided [SOURCE MATERIALS].
         """
 
         system_prompt = self.instructions if self.instructions else "You are an examiner. Generate a sharp, short-answer question based on the material."
 
-        print(f"DEBUG: Adaptive Generation for chunk {chunk.id} (Comparison: {bool(comparison_chunk)})")
-        q_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
+        print(f"DEBUG: Generation Mode: {'Simulation' if is_simulation else 'Pool'} | Turn: {turn_count}")
+        raw_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
         
-        # NO MORE hardcoded transitions here. Let the persona handle it.
+        q_text, a_text = raw_text, "SOURCE_MATERIAL_REFERENCE"
+        
+        if not is_simulation:
+            # Parse the structured response
+            q_text, a_text = self._parse_ai_response(raw_text)
 
         question = Question(
             question_text=q_text,
-            ideal_answer="SOURCE_MATERIAL_REFERENCE",
+            ideal_answer=a_text,
             status=QuestionStatus.PENDING,
             chunk_id=chunk.id,
             subsection_id=subsection_id
@@ -206,15 +195,19 @@ class ProfessorBot:
         print(f"DEBUG: Raw AI Response:\n{text}\n{'-'*30}")
         import re
         
-        # Look for "Question:" and "Ideal Answer:" even if inside markdown like **Question:**
-        q_match = re.search(r"(?:\*\*|#)?\s*(?:Question|QUESTION)[:\s*]+(.*?)(?=(?:\*\*|#)?\s*(?:Ideal Answer|IDEAL ANSWER)|$)", text, re.DOTALL | re.IGNORECASE)
-        a_match = re.search(r"(?:\*\*|#)?\s*(?:Ideal Answer|IDEAL ANSWER)[:\s*]+(.*)", text, re.DOTALL | re.IGNORECASE)
+        # Improved Regex: Handles Question/QUESTION followed by Answer/Ideal Answer in various formats
+        q_match = re.search(r"(?:\*\*|#)?\s*(?:Question|QUESTION)[:\s*]+(.*?)(?=(?:\*\*|#)?\s*(?:Ideal Answer|IDEAL ANSWER|Answer|ANSWER)|$)", text, re.DOTALL | re.IGNORECASE)
+        a_match = re.search(r"(?:\*\*|#)?\s*(?:Ideal Answer|IDEAL ANSWER|Answer|ANSWER)[:\s*]+(.*)", text, re.DOTALL | re.IGNORECASE)
         
         q_text = q_match.group(1).strip() if q_match else None
         a_text = a_match.group(1).strip() if a_match else None
         
+        # Fallback: If no tags found but it's a short response, assume it's just the question
+        if not q_text and len(text) < 500:
+            return text, "SOURCE_MATERIAL_REFERENCE"
+
         if q_text and a_text:
-            # Clean up residual markdown if any (like trailing ***)
+            # Clean up residual markdown if any
             q_text = re.sub(r"\*\*+$", "", q_text).strip()
             a_text = re.sub(r"\*\*+$", "", a_text).strip()
             return q_text, a_text

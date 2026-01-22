@@ -55,14 +55,11 @@ def get_db():
     finally:
         db.close()
 
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
-# The new google-genai SDK uses client-based configuration.
-# We'll initialize a client here to ensure the API key is valid, 
-# although it's not currently used in this file.
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 @app.on_event("startup")
 def startup_event():
@@ -359,33 +356,25 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, exclude_ids: str
     planner = TopicPlanner(db)
     rag = RAGService(db, Embedder(db))
     bot = ProfessorBot(db, rag, planner)
+    bot.instructions = quiz.instructions # ENSURE INSTRUCTIONS ARE PASSED
     
     # Pass 15+ pre-generated IDs to avoid direct duplicates, but generate JIT for adaptivity
     exclude_list = [int(i) for i in exclude_ids.split(",") if i.strip()]
     
-    # We prefer JIT generation for dialogue but fallback to pool for speed
-    question = bot.generate_single_question(quiz.course_id, history=history)
+    # We strictly use JIT generation for students to ensure instruction adherence
+    question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True)
     
+    # If first JIT attempt fails (e.g. topic selected was empty), try one more time
     if not question:
-        # Fallback to pool if JIT fails
-        pool = db.query(Question).filter(
-            Question.subsection_id.in_(
-                db.query(Subsection.id).join(Section).join(Chapter).filter(Chapter.course_id == quiz.course_id).scalar_subquery()
-            ),
-            Question.status == QuestionStatus.APPROVED,
-            ~Question.id.in_(exclude_list)
-        ).limit(10).all()
-        if pool:
-            import random
-            question = random.choice(pool)
+        question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True)
 
     if not question:
-        raise HTTPException(status_code=404, detail="Syllabus exhausted.")
+        raise HTTPException(status_code=404, detail="The Professor is busy formulating your next challenge. Please refresh in a moment.")
 
     return {
         "id": question.id, 
         "text": question.question_text, 
-        "answer": question.ideal_answer, 
+        "answer": "HIDDEN_DURING_QUIZ", # SECURITY: Never leak the answer to the student
         "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Quiz"
     }
 
