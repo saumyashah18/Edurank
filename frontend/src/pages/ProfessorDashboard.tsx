@@ -41,6 +41,7 @@ export const ProfessorDashboard: React.FC = () => {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const [seenQuestionIds, setSeenQuestionIds] = useState<number[]>([]);
+    const [inputMessage, setInputMessage] = useState('');
 
     const [ingestionStatus, setIngestionStatus] = useState<'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'>('PENDING');
 
@@ -111,11 +112,15 @@ export const ProfessorDashboard: React.FC = () => {
         }
     };
 
-    const fetchNextQuestion = async () => {
+    const fetchNextQuestion = async (historyStr: string = "") => {
         setIsTyping(true);
         try {
             const { data } = await client.get('/professor/simulate/next', {
-                params: { course_id: 1, exclude_ids: seenQuestionIds.join(',') }
+                params: {
+                    course_id: 1,
+                    exclude_ids: seenQuestionIds.join(','),
+                    history: historyStr
+                }
             });
 
             if (data.reset) {
@@ -137,6 +142,31 @@ export const ProfessorDashboard: React.FC = () => {
         } finally {
             setIsTyping(false);
         }
+    };
+
+    const handleSendMessage = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!inputMessage.trim() || isTyping) return;
+
+        const userMsg = inputMessage;
+        setInputMessage('');
+
+        // Find the last bot message that wasn't a system message
+        const lastBotMsg = [...messages].reverse().find(m => m.role === 'bot' && m.questionId);
+
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: userMsg }]);
+
+        // Construct history: q|a,q|a
+        // We only send the last few turns to keep it efficient
+        const historyPairs: string[] = [];
+        const recentMessages = messages.slice(-4); // Get last 4 messages to extract turns
+
+        // This is a bit simplified, but for simulation it works
+        if (lastBotMsg) {
+            historyPairs.push(`${lastBotMsg.text}|${userMsg}`);
+        }
+
+        await fetchNextQuestion(historyPairs.join(','));
     };
 
     const handleFinalize = async () => {
@@ -234,7 +264,7 @@ export const ProfessorDashboard: React.FC = () => {
                                     <div className="flex gap-4 mt-4 pt-4 border-t border-white/5">
                                         <button onClick={() => rankQuestion(msg.questionId!, 'like')} className="p-1 hover:text-accent transition-colors"><ThumbsUp size={16} /></button>
                                         <button onClick={() => rankQuestion(msg.questionId!, 'dislike')} className="p-1 hover:text-red-400 transition-colors"><ThumbsDown size={16} /></button>
-                                        <button onClick={fetchNextQuestion} className="p-1 hover:text-gray-100 transition-colors"><RefreshCw size={16} /></button>
+                                        <button onClick={() => fetchNextQuestion()} className="p-1 hover:text-gray-100 transition-colors"><RefreshCw size={16} /></button>
                                         <button onClick={() => navigator.clipboard.writeText(msg.text)} className="p-1 hover:text-gray-100 transition-colors"><Copy size={16} /></button>
                                     </div>
                                 )}
@@ -250,7 +280,26 @@ export const ProfessorDashboard: React.FC = () => {
                         <div ref={chatEndRef} />
                     </div>
 
-                    {/* Type tab removed for professor as per request */}
+                    <div className="p-4 border-t border-border bg-white/[0.01]">
+                        <form onSubmit={handleSendMessage} className="flex gap-3">
+                            <input
+                                type="text"
+                                value={inputMessage}
+                                onChange={(e) => setInputMessage(e.target.value)}
+                                placeholder="Type an answer to test AI adaptivity..."
+                                className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-colors"
+                                disabled={isTyping}
+                            />
+                            <Button
+                                type="submit"
+                                variant="secondary"
+                                className="px-6 rounded-2xl"
+                                disabled={!inputMessage.trim() || isTyping}
+                            >
+                                Send
+                            </Button>
+                        </form>
+                    </div>
                 </div>
             </section>
 

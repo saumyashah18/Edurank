@@ -95,10 +95,23 @@ class ProfessorBot:
         system_prompt = self.instructions if self.instructions else "You are an examiner. Generate the next question."
 
         print(f"DEBUG: JIT Question Generation for chunk {chunk.id}...")
-        q_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt)
+        q_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
         
+        # Prepend transition if history exists
+        if history:
+            import random
+            transitions = [
+                "I see. Moving forward,",
+                "That makes sense. Let's explore further:",
+                "Alright, let's look at the next aspect:",
+                "Got it. Here is the next question for you:",
+                "Understood. Let's dive deeper:",
+                "Good. Now, consider this:"
+            ]
+            q_text = f"{random.choice(transitions)} {q_text}"
+
         question = Question(
-            question_text=q_text.strip(),
+            question_text=q_text,
             ideal_answer="SOURCE_MATERIAL_REFERENCE", # No longer generating JIT to save time
             status=QuestionStatus.PENDING,
             chunk_id=chunk.id,

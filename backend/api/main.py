@@ -184,11 +184,39 @@ def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/professor/simulate/next")
-def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Session = Depends(get_db)):
-    """Fetch a question for simulation/testing with variety and duplicate prevention."""
+def get_next_simulation_question(course_id: int, exclude_ids: str = "", history: str = "", db: Session = Depends(get_db)):
+    """Fetch a question for simulation/testing with variety and adaptive history support."""
     exclude_list = [int(i) for i in exclude_ids.split(",") if i.strip()]
     
-    # 1. Potential pool: APPROVED or PENDING, not in exclude_list
+    # Parse history if provided (format: q|a,q|a)
+    parsed_history = []
+    if history:
+        for turn in history.split(","):
+            if "|" in turn:
+                q, a = turn.split("|", 1)
+                parsed_history.append({"q": q, "a": a})
+
+    # If we have history, try JIT generation for adaptivity
+    if parsed_history:
+        planner = TopicPlanner(db)
+        rag = RAGService(db, Embedder(db))
+        bot = ProfessorBot(db, rag, planner)
+        
+        # Fetch instructions for this course (from existing quiz)
+        quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
+        bot.instructions = quiz_config.instructions if quiz_config else None
+        
+        question = bot.generate_single_question(course_id, history=parsed_history)
+        if question:
+            return {
+                "id": question.id, 
+                "text": question.question_text, 
+                "answer": question.ideal_answer, 
+                "status": question.status.value,
+                "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Simulation"
+            }
+
+    # Fallback/Default: Pool Strategy (Novelty & Quality)
     query = db.query(Question).filter(
         Question.subsection_id.in_(
             db.query(Subsection.id).join(Section).join(Chapter).filter(Chapter.course_id == course_id).scalar_subquery()
@@ -197,15 +225,9 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", db: Sess
         ~Question.id.in_(exclude_list)
     )
     
-    # 2. Strategy: Mixed Novelty (Exposure) & Quality (Likes)
-    # This addresses "More of such" (Quality) while maintaining coverage (Novelty)
-    
-    # Select from Approved or Neutral pool (Simulation history)
-    # Priority: Approved > Neutral
     pool = query.order_by(Question.status.desc(), (Question.upvotes - Question.downvotes).desc()).limit(15).all()
     
     if not pool:
-        # Fallback: If no questions were approved, just grab any from this course
         pool = db.query(Question).join(Subsection).join(Section).join(Chapter).filter(
             Chapter.course_id == course_id,
             ~Question.id.in_(exclude_list)
