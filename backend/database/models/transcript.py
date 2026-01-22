@@ -11,8 +11,8 @@ class Quiz(BaseModel):
     total_marks = Column(Integer, default=100)
     total_questions = Column(Integer, default=5)
     password = Column(String)
-    is_finalized = Column(Integer, default=0) # 0: Draft, 1: Active
-    instructions = Column(Text) # System instructions/Prompt gating
+    is_finalized = Column(Integer, default=0)
+    instructions = Column(Text) 
     
     transcripts = relationship("Transcript", back_populates="quiz")
     course = relationship("Course", backref="quizzes")
