@@ -20,7 +20,7 @@ from ..database.models.hierarchy import Chapter, Section, Subsection, RawMateria
 from ..database.models.transcript import Transcript, Quiz
 
 
-app = FastAPI(title="AU Quiz Bot AI System")
+app = FastAPI(title="Dialogue box AI System")
 
 # Enable CORS with explicit null support for local files
 app.add_middleware(
@@ -216,7 +216,8 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = "", history:
             "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Simulation"
         }
 
-    raise HTTPException(status_code=404, detail="The bot was unable to generate a question. Please ensure syllabus data exists.")
+    # If we reach here, tell the user WHY.
+    raise HTTPException(status_code=503, detail="The AI is currently processing or rate-limited. Please ensure syllabus data is uploaded and wait a moment.")
 
 @app.post("/professor/questions/{question_id}/rank")
 def rank_question(question_id: int, interaction: str, db: Session = Depends(get_db)):
@@ -248,6 +249,21 @@ def create_exam_config(course_id: int, title: str, duration: int, total_marks: i
     db.commit()
     return {"quiz_id": quiz.id}
 
+@app.put("/professor/quiz/{quiz_id}")
+def update_quiz_details(quiz_id: int, data: dict, db: Session = Depends(get_db)):
+    """Update assessment configuration."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=44, detail="Quiz not found")
+    
+    quiz.title = data.get("title", quiz.title)
+    quiz.duration_minutes = data.get("duration", quiz.duration_minutes)
+    quiz.instructions = data.get("instructions", quiz.instructions)
+    # total_marks could also be updated if needed
+    
+    db.commit()
+    return {"status": "updated"}
+
 @app.post("/professor/quiz/{quiz_id}/finalize")
 def finalize_quiz(quiz_id: int, password: str, db: Session = Depends(get_db)):
     """Locks the quiz and sets the access password."""
@@ -278,6 +294,46 @@ def delete_quiz(quiz_id: int, db: Session = Depends(get_db)):
     db.delete(quiz)
     db.commit()
     return {"status": "deleted"}
+
+@app.get("/professor/quiz/{quiz_id}")
+def get_quiz_details(quiz_id: int, db: Session = Depends(get_db)):
+    """Fetch details for a specific quiz."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    return {
+        "id": quiz.id,
+        "title": quiz.title,
+        "course_id": quiz.course_id,
+        "duration_minutes": quiz.duration_minutes,
+        "total_marks": quiz.total_marks,
+        "total_questions": quiz.total_questions,
+        "is_finalized": quiz.is_finalized == 1
+    }
+
+@app.get("/professor/quiz/{quiz_id}/student/{enrollment_id}/messages")
+def get_student_transcript_messages(quiz_id: int, enrollment_id: str, db: Session = Depends(get_db)):
+    """Fetch the full conversation history for a specific student in a quiz."""
+    transcripts = db.query(Transcript).filter_by(
+        quiz_id=quiz_id,
+        enrollment_id=enrollment_id
+    ).order_by(Transcript.created_at).all()
+    
+    messages = []
+    for t in transcripts:
+        # Each transcript record represents one Q&A turn
+        messages.append({
+            "role": "bot",
+            "text": t.question.question_text if t.question else "N/A",
+            "type": "question"
+        })
+        messages.append({
+            "role": "user",
+            "text": t.student_answer,
+            "type": "answer"
+        })
+        
+    return messages
 
 # --- Student Endpoints ---
 @app.get("/student/quiz/{quiz_id}/meta")
@@ -333,7 +389,7 @@ def submit_answer(
     return result
 
 @app.get("/student/quiz/{quiz_id}/next-question")
-def get_student_next_question(quiz_id: int, enrollment_id: str, exclude_ids: str = "", db: Session = Depends(get_db)):
+def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: str = None, exclude_ids: str = "", db: Session = Depends(get_db)):
     """Fetch the next adaptive question based on student performance."""
     quiz = db.query(Quiz).get(quiz_id)
     if not quiz:
@@ -362,11 +418,11 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, exclude_ids: str
     exclude_list = [int(i) for i in exclude_ids.split(",") if i.strip()]
     
     # We strictly use JIT generation for students to ensure instruction adherence
-    question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True)
+    question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True, student_name=student_name)
     
     # If first JIT attempt fails (e.g. topic selected was empty), try one more time
     if not question:
-        question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True)
+        question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True, student_name=student_name)
 
     if not question:
         raise HTTPException(status_code=404, detail="The Professor is busy formulating your next challenge. Please refresh in a moment.")

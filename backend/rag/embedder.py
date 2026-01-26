@@ -1,20 +1,24 @@
-from sentence_transformers import SentenceTransformer
+from huggingface_hub import InferenceClient
 import faiss
 import numpy as np
-import os
 from sqlalchemy.orm import Session
 from ..database.models.chunk import Chunk, ChunkType
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class Embedder:
-    def __init__(self, db: Session, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, db: Session, model_name: str = "Alibaba-NLP/gte-Qwen2-7B-instruct"):
         self.db = db
         self.model_name = model_name
-        # all-MiniLM-L6-v2 dimension is 384. Previous Gemini was 768.
-        self.dimension = 384 
+        # GTE-Qwen2-7B-instruct dimension is 3584
+        self.dimension = 3584 
         self.index_path = "faiss_index/index.faiss"
+        self.hf_token = os.getenv("HF_TOKEN")
         
-        print(f"[*] Initializing Local Embedding Model: {self.model_name}")
-        self.model = SentenceTransformer(model_name)
+        print(f"[*] Initializing Hugging Face Embedding Client: {self.model_name}")
+        self.client = InferenceClient(model=self.model_name, token=self.hf_token)
         
         if os.path.exists(self.index_path):
             try:
@@ -42,11 +46,15 @@ class Embedder:
             return
 
         texts = [c.content for c in chunks]
-        print(f"[*] Encoding {len(texts)} chunks locally...")
+        print(f"[*] Encoding {len(texts)} chunks via Hugging Face API...")
         
-        # Local inference (Free!)
-        embeddings = self.model.encode(texts)
-        embeddings = np.array(embeddings).astype('float32')
+        # Hugging Face Inference API
+        all_embeddings = []
+        for text in texts:
+            emb = self.client.feature_extraction(text)
+            all_embeddings.append(emb)
+            
+        embeddings = np.array(all_embeddings).astype('float32')
         
         # Add to FAISS and map IDs
         print(f"[*] Syncing {len(embeddings)} vectors to FAISS...")
@@ -82,9 +90,9 @@ class RAGService:
 
     def retrieve(self, query: str, top_k: int = 3, chunk_types: list = None):
         """
-        Retrieves chunks locally based on query similarity.
+        Retrieves chunks using Hugging Face embeddings and FAISS similarity.
         """
-        query_embedding = self.embedder.model.encode([query])
+        query_embedding = self.client.feature_extraction(query)
         query_embedding = np.array(query_embedding).astype('float32').reshape(1, -1)
         
         distances, indices = self.embedder.index.search(query_embedding, top_k)

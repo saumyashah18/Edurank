@@ -6,10 +6,11 @@ class TopicPlanner:
     def __init__(self, db: Session):
         self.db = db
 
-    def select_next_topic(self, course_id: int, student_id: int = None, history: list = None):
+    def select_next_topic(self, course_id: int, student_id: int = None, history: list = None, filter_keywords: list = None):
         """
         Step 1: Topic Planning (Uses hierarchy metadata, NOT embeddings)
         Decides which subsection to focus on with randomized variety and recency bias.
+        Can be filtered by chapters or keywords (e.g., "Chapter 1", "Market Equilibrium").
         """
         import random
         candidates = []
@@ -21,7 +22,13 @@ class TopicPlanner:
         for chapter in chapters:
             for section in chapter.sections:
                 for subsection in section.subsections:
-                    if self._needs_more_exploration(subsection.id):
+                    # Apply keyword filtering if provided
+                    matches_filter = True
+                    if filter_keywords:
+                        full_context = f"{chapter.title} {section.title} {subsection.title}".lower()
+                        matches_filter = any(k.lower() in full_context for k in filter_keywords)
+                    
+                    if matches_filter and self._needs_more_exploration(subsection.id):
                         candidates.append({
                             "chapter_title": chapter.title,
                             "section_title": section.title,

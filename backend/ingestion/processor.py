@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from ..database.models.hierarchy import Chapter, Section, Subsection, RawMaterial
 from ..database.models.question import Question
-from ..database.models.chunk import Chunk
+from ..database.models.chunk import Chunk, KnowledgeRelation
 from ..database.models.course import Course, IngestionStatus
 from ..rag.embedder import Embedder
 import os
@@ -22,7 +22,7 @@ class MaterialProcessor:
         print(f"{'#'*60}")
         
         try:
-            # Set status to PROCESSING
+            
             course = self.db.query(Course).get(course_id)
             if course:
                 course.ingestion_status = IngestionStatus.PROCESSING
@@ -150,6 +150,10 @@ class MaterialProcessor:
                             print(f"      [EMBEDDING WARNING] {ee}")
                         
                         self.db.commit() # Persistent save for each subsection
+
+                        print(f"    - Generating Knowledge Graph relations for {subsection.title}...")
+                        self._create_semantic_relations(subsection.id)
+                        
                     except Exception as sub_e:
                         print(f"    [SUBSECTION ERROR] {sub_e}")
                         self.db.rollback()
@@ -179,3 +183,47 @@ class MaterialProcessor:
         
         self.db.commit()
         print("    -> Database cleared.")
+
+    def _create_semantic_relations(self, subsection_id: int):
+        """Uses Gemini to identify relationships between the recently created chunks."""
+        from ..quiz.llm_service import llm
+        from ..database.models.chunk import Chunk, KnowledgeRelation
+        
+        chunks = self.db.query(Chunk).filter_by(
+            subsection_id=subsection_id
+        ).limit(10).all() # Process in batches to avoid token limits
+        
+        if len(chunks) < 2:
+            return
+
+        context = "\n".join([f"ID {c.id}: {c.content[:200]}..." for c in chunks])
+        
+        prompt = f"""
+        Analyze these syllabus fragments and identify conceptual relationships.
+        Return ONLY a list of relations in this exact format:
+        SOURCE_ID|TARGET_ID|RELATION_TYPE
+        
+        RELATION_TYPE options: "critique", "support", "extension", "example", "prerequisite".
+        
+        FRAGMENTS:
+        {context}
+        """
+        
+        response = llm.generate_content(prompt, system_prompt="You are a knowledge graph architect. Output ONLY the pipe-separated values.")
+        
+        for line in response.split('\n'):
+            if '|' in line:
+                try:
+                    parts = line.split('|')
+                    if len(parts) == 3:
+                        s_id, t_id, r_type = parts
+                        relation = KnowledgeRelation(
+                            source_id=int(s_id.strip()),
+                            target_id=int(t_id.strip()),
+                            relation_type=r_type.strip()
+                        )
+                        self.db.add(relation)
+                except Exception:
+                    continue
+        
+        self.db.commit()

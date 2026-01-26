@@ -2,6 +2,7 @@ fastapi
 uvicorn
 sqlalchemy
 google-generativeai==0.8.6
+huggingface_hub
 faiss-cpu
 numpy
 python-multipart

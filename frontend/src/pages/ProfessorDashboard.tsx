@@ -25,7 +25,6 @@ export const ProfessorDashboard: React.FC = () => {
     const [instructions, setInstructions] = useState('');
     const [duration, setDuration] = useState(60);
     const [marks] = useState(100);
-    const [totalQuestions, setTotalQuestions] = useState(5);
     const { user } = useAuth();
 
     const [files, setFiles] = useState<FileUpload[]>([]);
@@ -101,7 +100,7 @@ export const ProfessorDashboard: React.FC = () => {
                     duration,
                     total_marks: marks,
                     instructions,
-                    total_questions: totalQuestions
+                    total_questions: 999 // Large number for chat-based sessions
                 }
             });
             setCurrentQuizId(res.data.quiz_id);
@@ -198,7 +197,6 @@ export const ProfessorDashboard: React.FC = () => {
                 <Input label="Instructions" multiline value={instructions} onChange={e => setInstructions(e.target.value)} placeholder="e.g. Ask challenging questions about process scheduling" info="System instructions for the AI examiner" />
                 <div className="flex gap-4">
                     <Input label="Duration (Min)" type="number" value={duration} onChange={e => setDuration(parseInt(e.target.value))} className="flex-1" />
-                    <Input label="Questions" type="number" value={totalQuestions} onChange={e => setTotalQuestions(parseInt(e.target.value))} className="flex-1" />
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -248,7 +246,7 @@ export const ProfessorDashboard: React.FC = () => {
                     <div className="px-6 py-4 border-b border-border bg-white/[0.02]">
                         <h4 className="font-semibold text-gray-100 flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-green-400" />
-                            🤖 Assessment AI Simulation
+                            Assessment AI Preview
                         </h4>
                         <p className="text-xs text-gray-400 mt-1">Review and rank questions to improve AI behavior.</p>
                     </div>
@@ -304,7 +302,7 @@ export const ProfessorDashboard: React.FC = () => {
                     </div>
                 </div>
             </section>
-
+//simulation
             {/* Finalize Modal */}
             {isFinalizing && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 z-50">

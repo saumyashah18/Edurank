@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
-import { CheckCircle2, Timer, User } from 'lucide-react';
+import { CheckCircle2, Timer, User, Send } from 'lucide-react';
 import { useLocation, useParams } from 'react-router-dom';
 import client from '../api/client';
 
@@ -10,13 +10,14 @@ export const StudentQuiz: React.FC = () => {
     const location = useLocation();
     const studentInfo = location.state as { name: string; enrollmentId: string } | null;
 
-    const [question, setQuestion] = useState<{ id: number; text: string } | null>(null);
+    const [messages, setMessages] = useState<{ id: string; role: 'bot' | 'user'; text: string }[]>([]);
     const [answer, setAnswer] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isFinished, setIsFinished] = useState(false);
-    const [currentQuestion, setCurrentQuestion] = useState(1);
+    const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
     const [seenIds, setSeenIds] = useState<number[]>([]);
     const [loading, setLoading] = useState(true);
+    const [currentQuestionId, setCurrentQuestionId] = useState<number | null>(null);
 
     // Timer & Metadata state
     const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -67,15 +68,19 @@ export const StudentQuiz: React.FC = () => {
             const { data } = await client.get(`/student/quiz/${quizId}/next-question`, {
                 params: {
                     exclude_ids: seenIds.join(','),
-                    enrollment_id: studentInfo?.enrollmentId
+                    enrollment_id: studentInfo?.enrollmentId,
+                    student_name: studentInfo?.name
                 }
             });
 
             if (data.reset) {
                 setIsFinished(true);
             } else {
-                setQuestion({ id: data.id, text: data.text });
+                const botMsg = { id: Date.now().toString(), role: 'bot' as const, text: data.text };
+                setMessages(prev => [...prev, botMsg]);
                 setSeenIds(prev => [...prev, data.id]);
+                setCurrentQuestionId(data.id);
+                setCurrentQuestionIdx(prev => prev + 1);
             }
         } catch (err) {
             console.error("Failed to fetch question", err);
@@ -86,22 +91,24 @@ export const StudentQuiz: React.FC = () => {
     };
 
     const handleSubmit = async () => {
-        if (!answer.trim() || !studentInfo || !question) return;
+        if (!answer.trim() || !studentInfo || !currentQuestionId) return;
+
+        const userMsgText = answer;
+        setAnswer("");
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: userMsgText }]);
 
         setIsSubmitting(true);
         try {
             await client.post(`/student/quiz/${quizId}/submit`, {
-                question_id: question.id,
-                answer: answer,
+                question_id: currentQuestionId,
+                answer: userMsgText,
                 student_name: studentInfo.name,
                 enrollment_id: studentInfo.enrollmentId
             });
 
-            setAnswer("");
-            if (currentQuestion >= totalQuestionsLimit) {
-                setIsFinished(true);
+            if (currentQuestionIdx >= totalQuestionsLimit) {
+                setTimeout(() => setIsFinished(true), 1500); // Give them a moment to see their last answer
             } else {
-                setCurrentQuestion(prev => prev + 1);
                 fetchQuestion();
             }
         } catch (err) {
@@ -138,52 +145,73 @@ export const StudentQuiz: React.FC = () => {
 
     return (
         <Layout title="Student Assessment">
-            <div className="flex-1 overflow-y-auto p-8 flex flex-col items-center">
-                <div className="w-full max-w-3xl flex flex-col gap-8">
+            <div className="flex-1 overflow-hidden p-8 flex flex-col items-center min-h-0">
+                <div className="w-full max-w-4xl h-full flex flex-col gap-6 min-h-0">
+                    {/* Header Info */}
                     <div className="flex items-center justify-between text-gray-400 text-sm">
                         <div className="flex items-center gap-3 bg-white/[0.03] px-4 py-2 rounded-2xl border border-white/5">
                             <User size={16} className="text-accent" />
                             <span className="font-medium">{studentInfo?.name} ({studentInfo?.enrollmentId})</span>
                         </div>
-                        <span className={`flex items-center gap-2 px-4 py-2 rounded-2xl border border-accent/20 ${timeLeft !== null && timeLeft < 300 ? 'text-red-400 bg-red-400/10 animate-pulse' : 'text-accent bg-accent/10'}`}>
-                            <Timer size={16} />
-                            Remaining: {timeLeft !== null ? formatTime(timeLeft) : '--:--'}
-                        </span>
+                        <div className="flex items-center gap-6">
+                            <span className={`flex items-center gap-2 px-4 py-2 rounded-2xl border border-accent/20 ${timeLeft !== null && timeLeft < 300 ? 'text-red-400 bg-red-400/10 animate-pulse' : 'text-accent bg-accent/10'}`}>
+                                <Timer size={16} />
+                                {timeLeft !== null ? formatTime(timeLeft) : '--:--'}
+                            </span>
+                        </div>
                     </div>
 
-                    <div className="bg-panel border border-border rounded-[32px] p-8 shadow-xl relative overflow-hidden min-h-[160px] flex flex-col justify-center">
-                        <div className="absolute top-0 left-0 w-1 h-full bg-accent" />
-                        <span className="text-xs font-bold text-accent uppercase tracking-widest mb-4 block">Question {currentQuestion} / {totalQuestionsLimit}</span>
-                        {loading ? (
-                            <div className="animate-pulse space-y-4">
-                                <div className="h-4 bg-white/10 rounded w-3/4" />
-                                <div className="h-4 bg-white/10 rounded w-1/2" />
-                            </div>
-                        ) : (
-                            <p className="text-xl text-gray-100 leading-relaxed font-medium">
-                                {question?.text}
-                            </p>
-                        )}
-                    </div>
+                    {/* Chat Container */}
+                    <div className="flex-1 bg-panel border border-border rounded-[32px] overflow-hidden flex flex-col shadow-2xl min-h-0">
+                        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scrollbar-hide">
+                            {messages.map((msg) => (
+                                <div key={msg.id} className={`max-w-[85%] rounded-[24px] p-4 text-sm leading-relaxed animate-in fade-in slide-in-from-bottom-2 duration-300 ${msg.role === 'bot'
+                                    ? 'self-start bg-white/[0.05] border border-white/10 text-gray-100 rounded-bl-none'
+                                    : 'self-end bg-accent text-[#062e6f] font-medium rounded-br-none'
+                                    }`}>
+                                    {msg.text}
+                                </div>
+                            ))}
+                            {loading && (
+                                <div className="self-start bg-white/[0.03] rounded-[24px] p-4 flex gap-1 rounded-bl-none">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" />
+                                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce [animation-delay:0.2s]" />
+                                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce [animation-delay:0.4s]" />
+                                </div>
+                            )}
+                        </div>
 
-                    <div className="flex flex-col gap-4 bg-panel border border-border rounded-[32px] p-8 mt-4 shadow-sm">
-                        <label className="text-sm font-medium text-gray-400">Your Answer</label>
-                        <textarea
-                            value={answer}
-                            onChange={e => setAnswer(e.target.value)}
-                            placeholder="Type your answer here..."
-                            disabled={loading || isSubmitting}
-                            className="bg-bg border border-border rounded-2xl p-6 text-lg text-gray-100 focus:outline-none focus:border-accent min-h-[250px] transition-all resize-none disabled:opacity-50"
-                        />
-                        <div className="flex justify-end mt-4">
-                            <Button
-                                onClick={handleSubmit}
-                                loading={isSubmitting}
-                                disabled={loading || !answer.trim()}
-                                className="w-full md:w-[220px] py-4 text-lg"
+                        {/* Input Area */}
+                        <div className="p-4 border-t border-border bg-white/[0.01]">
+                            <form
+                                onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
+                                className="flex gap-3"
                             >
-                                {currentQuestion < totalQuestionsLimit ? "Submit & Next" : "Finalize Submission"}
-                            </Button>
+                                <textarea
+                                    value={answer}
+                                    onChange={e => setAnswer(e.target.value)}
+                                    placeholder="Type your answer here..."
+                                    disabled={loading || isSubmitting}
+                                    className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none h-[52px] scrollbar-hide"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleSubmit();
+                                        }
+                                    }}
+                                />
+                                <Button
+                                    type="submit"
+                                    variant="secondary"
+                                    className="px-6 rounded-2xl h-[52px]"
+                                    disabled={loading || isSubmitting || !answer.trim()}
+                                >
+                                    <Send size={18} />
+                                </Button>
+                            </form>
+                            <p className="text-[10px] text-center text-gray-500 mt-2 uppercase tracking-widest font-bold">
+                                Press Enter to send • Shift + Enter for new line
+                            </p>
                         </div>
                     </div>
                 </div>

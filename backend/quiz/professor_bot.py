@@ -42,16 +42,37 @@ class ProfessorBot:
                 processed_subsections.append(question.subsection_id)
         
         return f"Pool Ready: Generated {total_generated} diverse questions for the assessment."
-    def generate_single_question(self, course_id: int, history: List[Dict[str, str]] = None, is_simulation: bool = True):
+
+    def _extract_topic_filters(self, instructions: str) -> List[str]:
+        """Extracts chapter numbers using RegEx (saves tokens) or Gemini as fallback."""
+        if not instructions or len(instructions) < 5:
+            return None
+            
+        import re
+        # Try simple RegEx first for "Chapter X" or "Unit X"
+        chapters = re.findall(r"(?i)chapter\s*(\d+)", instructions)
+        if chapters:
+            return [f"Chapter {c}" for c in chapters]
+            
+        # Optional: Add more RegEx patterns or just return None for now to be safe
+        # We'll skip the LLM call for every request to save quota.
+        return None
+
+    def generate_single_question(self, course_id: int, history: List[Dict[str, str]] = None, is_simulation: bool = True, student_name: str = None):
         """Generates ONE question grounded in the chunk, adapted to student history if provided."""
+        
+        # 0. Extract Filters from Instructions (RegEx only now)
+        quiz_config = self.db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
+        self.instructions = quiz_config.instructions if quiz_config else None
+        filters = self._extract_topic_filters(self.instructions)
         
         # 1. Turn Detection & Topic Selection
         history_len = len(history) if history else 0
         turn_count = history_len + 1
         
-        # 2. Topic Selection with Diversity
+        # 2. Topic Selection with Diversity & Filtering
         # We let the instructions (system prompt) guide the starting point/arc.
-        topic = self.planner.select_next_topic(course_id, student_id=None, history=history)
+        topic = self.planner.select_next_topic(course_id, student_id=None, history=history, filter_keywords=filters)
         if not topic:
             return None
 
@@ -73,7 +94,7 @@ class ProfessorBot:
         comparison_chunk = self._fetch_comparison_chunk(course_id, exclude_subsection_id=topic["subsection_id"])
 
         # 4. Generation: Strictly Instruction-Led
-        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history, comparison_chunk, related_chunks, turn_count, is_simulation=is_simulation)
+        return self._create_question_from_m_chunk(m_chunk, topic["subsection_id"], history, comparison_chunk, related_chunks, turn_count, is_simulation=is_simulation, student_name=student_name)
 
     def _fetch_graph_relations(self, chunk_id: int):
         """Fetches chunks connected via explicit KnowledgeRelation graph."""
@@ -99,7 +120,7 @@ class ProfessorBot:
             ).first()
         return None
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None, comparison_chunk: Chunk = None, related_chunks: List[Chunk] = None, turn_count: int = 1, is_simulation: bool = True):
+    def _create_question_from_m_chunk(self, chunk: Chunk, subsection_id: int, history: List[Dict[str, str]] = None, comparison_chunk: Chunk = None, related_chunks: List[Chunk] = None, turn_count: int = 1, is_simulation: bool = True, student_name: str = None):
         """Generates a question following structural or conversational logic."""
         
         # Build history context
@@ -143,6 +164,17 @@ class ProfessorBot:
             prompt_goal = f"Respond as the Professor. Current Turn: {turn_count}."
             additional_constraints = "Do NOT provide an 'Ideal Answer'. Simply speak to the student."
 
+        # REFINED BRIDGING LOGIC: Use KnowledgeRelations if they exist
+        relation_hint = ""
+        if related_chunks and turn_count > 1:
+            from ..database.models.chunk import KnowledgeRelation
+            rel = self.db.query(KnowledgeRelation).filter(
+                (KnowledgeRelation.source_id == chunk.id) & 
+                (KnowledgeRelation.target_id.in_([rc.id for rc in related_chunks]))
+            ).first()
+            if rel:
+                relation_hint = f"\n### CONCEPTUAL LINK (Knowledge Graph):\nThe primary material HAS a '{rel.relation_type}' relationship with the related concepts. You MUST test the student on this specific link."
+
         user_prompt = f"""
         [ADAPTIVE CONTEXT]
         TURN_COUNT: {turn_count}
@@ -151,9 +183,10 @@ class ProfessorBot:
         MODE: {"Simulation" if is_simulation else "Pool Generation"}
         
         [SOURCE MATERIALS]
-        PRIMARY: {chunk.content}
+        PRIMARY (The focus): {chunk.content}
         {comparison_context}
         {graph_context}
+        {relation_hint}
 
         [CONVERSATION HISTORY]
         {history_context}
@@ -162,12 +195,25 @@ class ProfessorBot:
         {prompt_goal}
         {additional_constraints}
         
+        If bridging or multiple topics are present, do NOT ask about them separately. 
+        Create a single, synthetic question that forces the student to connect these ideas.
+        
         STRICTLY follow your system instructions for tone, behavior, and structural goals.
-        If your system instructions specify a specific arc (e.g., Phase 1, 2, 3), apply the rule corresponding to TURN_COUNT {turn_count}.
         Ground your response in the provided [SOURCE MATERIALS].
         """
 
-        system_prompt = self.instructions if self.instructions else "You are an examiner. Generate a sharp, short-answer question based on the material."
+        default_persona = f"""
+        You are an elite academic examiner for "Dialogue box". Your goal is to conduct a deep, conversational assessment.
+        
+        STRICT RULES:
+        1. NO ANSWERS: Never give the student the actual answer, even if they ask or fail repeatedly. 
+        2. GUIDANCE: If a student is stuck or partially correct, provide a subtle hint or a Socratic follow-up question to lead them to the truth.
+        3. TONE: Be professional, encouraging, and intellectual.
+        {f"4. GREETING: This is the very first turn. Start by saying 'Hi {student_name}!' followed by an introduction and your first question." if turn_count == 1 and student_name else ""}
+        5. CONVERSATION: If turn_count > 1, respond naturally to their last answer before moving to the next point or providing a hint.
+        """
+
+        system_prompt = self.instructions if self.instructions else default_persona
 
         print(f"DEBUG: Generation Mode: {'Simulation' if is_simulation else 'Pool'} | Turn: {turn_count}")
         raw_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()

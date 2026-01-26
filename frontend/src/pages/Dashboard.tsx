@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
-import { Plus, BookOpen, Users, Settings, Trash2, Copy, Check, Key, Edit2 } from 'lucide-react';
+import { Plus, BookOpen, Users, Trash2, Copy, Check, Key, Edit2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import client from '../api/client';
@@ -117,12 +117,8 @@ export const Dashboard: React.FC = () => {
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-4">
                                             <div className="flex items-center gap-2 text-gray-400 text-xs font-medium">
-                                                <Settings size={14} />
-                                                {item.total_questions} Qs
-                                            </div>
-                                            <div className="flex items-center gap-2 text-gray-400 text-xs font-medium">
                                                 <Users size={14} />
-                                                {item.transcripts_count} Students
+                                                {item.transcripts_count} Students applied
                                             </div>
                                         </div>
                                         {item.is_finalized && (
@@ -156,13 +152,11 @@ export const Dashboard: React.FC = () => {
                                 <div className="absolute bottom-6 right-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button
                                         onClick={(e) => handleDelete(e, item.id)}
-                                        className="w-8 h-8 rounded-full bg-red-400/10 text-red-400 flex items-center justify-center hover:bg-red-400 hover:text-white transition-all"
+                                        className="w-10 h-10 rounded-full bg-red-400/10 text-red-400 flex items-center justify-center hover:bg-red-400 hover:text-white transition-all shadow-lg"
+                                        title="Delete Assessment"
                                     >
-                                        <Trash2 size={16} />
+                                        <Trash2 size={20} />
                                     </button>
-                                    <div className="w-8 h-8 rounded-full bg-accent text-[#062e6f] flex items-center justify-center">
-                                        <Plus size={18} />
-                                    </div>
                                 </div>
                             </div>
                         ))}
