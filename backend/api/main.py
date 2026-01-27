@@ -55,11 +55,9 @@ def get_db():
     finally:
         db.close()
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 @app.on_event("startup")
 def startup_event():
@@ -254,7 +252,7 @@ def update_quiz_details(quiz_id: int, data: dict, db: Session = Depends(get_db))
     """Update assessment configuration."""
     quiz = db.query(Quiz).get(quiz_id)
     if not quiz:
-        raise HTTPException(status_code=44, detail="Quiz not found")
+        raise HTTPException(status_code=404, detail="Quiz not found")
     
     quiz.title = data.get("title", quiz.title)
     quiz.duration_minutes = data.get("duration", quiz.duration_minutes)

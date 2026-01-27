@@ -92,7 +92,7 @@ class RAGService:
         """
         Retrieves chunks using Hugging Face embeddings and FAISS similarity.
         """
-        query_embedding = self.client.feature_extraction(query)
+        query_embedding = self.embedder.client.feature_extraction(query)
         query_embedding = np.array(query_embedding).astype('float32').reshape(1, -1)
         
         distances, indices = self.embedder.index.search(query_embedding, top_k)

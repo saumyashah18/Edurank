@@ -19,6 +19,9 @@ class TopicPlanner:
         chapters = self.db.query(Chapter).filter_by(course_id=course_id).order_by(Chapter.order).all()
         
         # 2. Collect all subsections needing more coverage
+        # If history exists, it's a student session/simulation: bypass global exploration limits
+        is_simulation = history is not None
+        
         for chapter in chapters:
             for section in chapter.sections:
                 for subsection in section.subsections:
@@ -28,7 +31,7 @@ class TopicPlanner:
                         full_context = f"{chapter.title} {section.title} {subsection.title}".lower()
                         matches_filter = any(k.lower() in full_context for k in filter_keywords)
                     
-                    if matches_filter and self._needs_more_exploration(subsection.id):
+                    if matches_filter and (is_simulation or self._needs_more_exploration(subsection.id)):
                         candidates.append({
                             "chapter_title": chapter.title,
                             "section_title": section.title,
@@ -63,5 +66,5 @@ class TopicPlanner:
         """Determines if a subsection needs more coverage based on total generated questions."""
         from ..database.models.question import Question
         q_count = self.db.query(Question).filter_by(subsection_id=subsection_id).count()
-        # Ensure we don't over-saturate a single topic (up to 8 questions per section)
-        return q_count < 8
+        # Ensure we don't over-saturate a single topic (up to 20 questions per section for the pool)
+        return q_count < 20
