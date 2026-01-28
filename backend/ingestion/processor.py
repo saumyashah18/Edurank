@@ -151,8 +151,8 @@ class MaterialProcessor:
                         
                         self.db.commit() # Persistent save for each subsection
 
-                        print(f"    - Generating Knowledge Graph relations for {subsection.title}...")
-                        self._create_semantic_relations(subsection.id)
+                        # [CREDIT OPTIMIZATION] Deterministic Keyword-Based Knowledge Graph
+                        self._create_deterministic_relations(subsection.id)
                         
                     except Exception as sub_e:
                         print(f"    [SUBSECTION ERROR] {sub_e}")
@@ -184,46 +184,57 @@ class MaterialProcessor:
         self.db.commit()
         print("    -> Database cleared.")
 
-    def _create_semantic_relations(self, subsection_id: int):
-        """Uses Gemini to identify relationships between the recently created chunks."""
-        from ..quiz.llm_service import llm
-        from ..database.models.chunk import Chunk, KnowledgeRelation
-        
-        chunks = self.db.query(Chunk).filter_by(
-            subsection_id=subsection_id
-        ).limit(10).all() # Process in batches to avoid token limits
-        
-        if len(chunks) < 2:
+    def _create_deterministic_relations(self, subsection_id: int):
+        """Builds KnowledgeRelations by matching keywords between the new subsection and existing ones."""
+        from ..database.models.chunk import Chunk, KnowledgeRelation, ChunkType
+        from ..database.models.hierarchy import Subsection
+        import re
+
+        # 1. Fetch current chunks for this subsection
+        current_chunks = self.db.query(Chunk).filter_by(subsection_id=subsection_id, chunk_type=ChunkType.MEDIUM).all()
+        if not current_chunks:
             return
 
-        context = "\n".join([f"ID {c.id}: {c.content[:200]}..." for c in chunks])
-        
-        prompt = f"""
-        Analyze these syllabus fragments and identify conceptual relationships.
-        Return ONLY a list of relations in this exact format:
-        SOURCE_ID|TARGET_ID|RELATION_TYPE
-        
-        RELATION_TYPE options: "critique", "support", "extension", "example", "prerequisite".
-        
-        FRAGMENTS:
-        {context}
-        """
-        
-        response = llm.generate_content(prompt, system_prompt="You are a knowledge graph architect. Output ONLY the pipe-separated values.")
-        
-        for line in response.split('\n'):
-            if '|' in line:
-                try:
-                    parts = line.split('|')
-                    if len(parts) == 3:
-                        s_id, t_id, r_type = parts
-                        relation = KnowledgeRelation(
-                            source_id=int(s_id.strip()),
-                            target_id=int(t_id.strip()),
-                            relation_type=r_type.strip()
-                        )
-                        self.db.add(relation)
-                except Exception:
-                    continue
-        
+        # 2. Extract potential keywords (Capitalized words > 4 chars, avoiding common stopwords)
+        # This is a heuristic for concepts/names
+        ignore_words = {"this", "that", "there", "their", "chapter", "section", "about", "would", "could", "should"}
+        keywords = set()
+        for chunk in current_chunks:
+            found = re.findall(r"\b[A-Z][a-z]{4,}\b", chunk.content)
+            for word in found:
+                if word.lower() not in ignore_words:
+                    keywords.add(word)
+
+        if not keywords:
+            return
+
+        # 3. Search for these keywords in OTHER subsections' chunks (within the same course)
+        # We look for chunks in subsections that belong to the same course but have a different ID
+        current_sub = self.db.query(Subsection).get(subsection_id)
+        if not current_sub:
+            return
+            
+        other_chunks = self.db.query(Chunk).join(Subsection).join(Section).join(Chapter).filter(
+            Chapter.course_id == current_sub.section.chapter.course_id,
+            Subsection.id != subsection_id,
+            Chunk.chunk_type == ChunkType.MEDIUM
+        ).all()
+
+        for cur_chunk in current_chunks:
+            for other_chunk in other_chunks:
+                # Check for shared keywords
+                shared = [k for k in keywords if k in other_chunk.content]
+                if shared:
+                    # Create relation if not exists
+                    relation = KnowledgeRelation(
+                        source_id=cur_chunk.id,
+                        target_id=other_chunk.id,
+                        relation_type=f"shared_concept:{shared[0]}"
+                    )
+                    self.db.add(relation)
+
         self.db.commit()
+
+    def _create_semantic_relations(self, subsection_id: int):
+        """[DEPRECATED] AI-based relation builder - preserved for compatibility check."""
+        pass

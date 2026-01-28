@@ -2,12 +2,9 @@ from typing import List
 from sqlalchemy.orm import Session
 from ..database.models.chunk import Chunk, ChunkType
 from ..database.models.hierarchy import Subsection, RawMaterial
-from ..quiz.llm_service import llm
-
 class Chunker:
     def __init__(self, db: Session):
         self.db = db
-        self.llm = llm
 
 
 

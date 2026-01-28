@@ -6,60 +6,90 @@ class TopicPlanner:
     def __init__(self, db: Session):
         self.db = db
 
-    def select_next_topic(self, course_id: int, student_id: int = None, history: list = None, filter_keywords: list = None):
+    def select_next_topic(self, course_id: int, enrollment_id: str = None, quiz_id: int = None, filter_keywords: list = None, used_chunk_ids: list = None):
         """
-        Step 1: Topic Planning (Uses hierarchy metadata, NOT embeddings)
-        Decides which subsection to focus on with randomized variety and recency bias.
-        Can be filtered by chapters or keywords (e.g., "Chapter 1", "Market Equilibrium").
+        Step 1: Live Topic Selection (Deterministic & Diverse)
+        Excludes used chunks and balances authors (Anjaria, Shapiro, Chatterjee).
         """
         import random
-        candidates = []
-        
-        # 1. Fetch all chapters/sections for the course
+        from ..database.models.transcript import Transcript
+        from ..database.models.question import Question
+        from ..database.models.chunk import Chunk, ChunkType
+
+        # 1. Identify used Chunk IDs and recently used authors
+        if used_chunk_ids is None:
+            used_chunk_ids = []
+            
+        recent_authors = []
+        if enrollment_id and quiz_id:
+            # Fetch used chunks
+            used_chunk_q = self.db.query(Question.chunk_id, Question.question_text).join(Transcript, Transcript.question_id == Question.id).filter(Transcript.enrollment_id == enrollment_id, Transcript.quiz_id == quiz_id).all()
+            used_chunk_ids.extend([r[0] for r in used_chunk_q])
+            
+            # Simple heuristic for recent authors in last 3 questions
+            for _, q_text in used_chunk_q[-3:]:
+                q_text_lower = q_text.lower()
+                if "anjaria" in q_text_lower: recent_authors.append("anjaria")
+                if "shapiro" in q_text_lower: recent_authors.append("shapiro")
+                if "chatterjee" in q_text_lower: recent_authors.append("chatterjee")
+
+        # 2. Fetch all chapters/sections for the course
         chapters = self.db.query(Chapter).filter_by(course_id=course_id).order_by(Chapter.order).all()
         
-        # 2. Collect all subsections needing more coverage
-        # If history exists, it's a student session/simulation: bypass global exploration limits
-        is_simulation = history is not None
-        
+        candidates = []
         for chapter in chapters:
             for section in chapter.sections:
                 for subsection in section.subsections:
-                    # Apply keyword filtering if provided
                     matches_filter = True
                     if filter_keywords:
                         full_context = f"{chapter.title} {section.title} {subsection.title}".lower()
                         matches_filter = any(k.lower() in full_context for k in filter_keywords)
                     
-                    if matches_filter and (is_simulation or self._needs_more_exploration(subsection.id)):
-                        candidates.append({
-                            "chapter_title": chapter.title,
-                            "section_title": section.title,
-                            "subsection_id": subsection.id,
-                            "subsection_title": subsection.title
-                        })
-        
-        # 3. Recency Exclusion: Don't pick the last 2-3 topics used if we have other choices
-        recent_sub_ids = []
-        try:
-            from ..database.models.question import Question
-            recent_q = self.db.query(Question.subsection_id).filter(Question.subsection_id != None).order_by(Question.id.desc()).limit(10).all()
-            recent_sub_ids = [r[0] for r in recent_q if r[0] is not None]
-        except:
-            pass
+                    if matches_filter:
+                        available_chunks = self.db.query(Chunk).filter(
+                            Chunk.subsection_id == subsection.id,
+                            Chunk.chunk_type == ChunkType.MEDIUM,
+                            ~Chunk.id.in_(used_chunk_ids)
+                        ).all()
+                        
+                        for chunk in available_chunks:
+                            # 3. Author Heuristic (Check first 500 chars)
+                            content_low = chunk.content[:500].lower()
+                            author = "unknown"
+                            if "anjaria" in content_low: author = "anjaria"
+                            elif "shapiro" in content_low: author = "shapiro"
+                            elif "chatterjee" in content_low: author = "chatterjee"
+                            
+                            candidates.append({
+                                "chunk": chunk,
+                                "author": author
+                            })
 
-        final_candidates = [c for c in candidates if c["subsection_id"] not in recent_sub_ids[:3]]
+        # 4. Selection Bias Choice
+        if candidates:
+            # Separate candidates into 'diverse' (not recent author) and 'others'
+            diverse_candidates = [c for c in candidates if c["author"] != "unknown" and c["author"] not in recent_authors]
+            
+            if diverse_candidates:
+                chosen = random.choice(diverse_candidates)
+                return chosen["chunk"], chosen["author"]
+            
+            # Fallback to random if no diverse candidates found (or all authors are 'unknown')
+            chosen = random.choice(candidates)
+            return chosen["chunk"], chosen["author"]
         
-        # Fallback to all candidates if exclusion leaves us with nothing
-        if not final_candidates:
-            final_candidates = candidates
+        return None, None
 
-        # 4. Variety Logic: Pick randomly from the filtered list
-        if final_candidates:
-            random.shuffle(final_candidates)
-            return random.choice(final_candidates)
-        
-        return None
+    def get_chunk_author(self, chunk):
+        """Helper to identify the author of a chunk based on content heuristics."""
+        if not chunk:
+            return "unknown"
+        # Detect author for current chunk manually if staying on same topic
+        content_low = chunk.content[:500].lower()
+        if "anjaria" in content_low: return "anjaria"
+        if "shapiro" in content_low: return "shapiro"
+        if "chatterjee" in content_low: return "chatterjee"
+        return "the author"
 
 
     def _needs_more_exploration(self, subsection_id: int) -> bool:

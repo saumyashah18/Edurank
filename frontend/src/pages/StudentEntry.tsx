@@ -60,7 +60,7 @@ export const StudentEntry: React.FC = () => {
                             label="Full Name"
                             value={name}
                             onChange={e => setName(e.target.value)}
-                            placeholder="e.g. John Doe"
+                            placeholder="e.g. Om Chelji Patel"
                             required
                         />
                         <Input

@@ -42,12 +42,30 @@ class EvaluationService:
         """
         
         response_text = self.llm.generate_content(prompt)
+        
+        if "ERROR_RATE_LIMIT" in response_text:
+            return {"score": 0.5, "reasoning": "AI Evaluation busy", "retrieved_chunk_ids": chunk_ids}
 
-        # Simplified parsing of AI response
-        # In production, use structured output (Schema/JSON)
+        # Parse AI response for score and reasoning
+        import re
+        # Support both 0.8 and 8/10 formats
+        score_match = re.search(r"(?i)score[:\s*]+(\d+(?:\.\d+)?)", response_text)
+        reasoning_match = re.search(r"(?i)reasoning[:\s*]+(.*?)(?=\d\.|Missing|\Z)", response_text, re.DOTALL)
+        
+        raw_score = float(score_match.group(1)) if score_match else 0.5
+        # Normalize score to 0.0 - 1.0 if it seems to be out of 10 or 100
+        if raw_score > 10:
+            score = raw_score / 100
+        elif raw_score > 1:
+            score = raw_score / 10
+        else:
+            score = raw_score
+            
+        reasoning = reasoning_match.group(1).strip() if reasoning_match else response_text
+
         return {
-            "score": 0.8, # Mocked
-            "reasoning": response_text,
+            "score": score,
+            "reasoning": reasoning,
             "retrieved_chunk_ids": chunk_ids
         }
 

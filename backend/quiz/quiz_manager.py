@@ -26,6 +26,18 @@ class QuizManager:
         Logs raw student responses for academic audit. 
         Evaluation is NOT performed here to maximize throughput.
         """
+        # Perform Evaluation
+        from ..database.models.question import Question
+        question = self.db.query(Question).get(question_id)
+        
+        eval_result = {"score": 0.0, "reasoning": "Evaluation failed"}
+        if question:
+            eval_result = self.eval_service.evaluate_answer(
+                question_text=question.question_text,
+                student_answer=answer_text,
+                ideal_answer=question.ideal_answer
+            )
+
         # Log Transcript (Academic Audit)
         transcript = Transcript(
             student_name=student_name,
@@ -33,8 +45,8 @@ class QuizManager:
             quiz_id=quiz_id,
             question_id=question_id,
             student_answer=answer_text,
-            ai_evaluation="LOGGED_FOR_AUDIT",
-            score=0.0, # Placeholder, logic moved to implicit adaptive eval
+            ai_evaluation=eval_result.get("reasoning", "LOGGED_FOR_AUDIT"),
+            score=eval_result.get("score", 0.0),
             time_taken_seconds=0
         )
         

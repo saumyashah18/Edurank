@@ -161,13 +161,13 @@ def review_question(question_id: int, status: str, db: Session = Depends(get_db)
     return {"status": "Updated"}
 
 @app.post("/professor/generate/{course_id}")
-def trigger_generation(course_id: int, total_marks: int = 100, db: Session = Depends(get_db)):
-    """Triggers the ProfessorBot to generate questions based on marks."""
-    print(f"Triggering question generation for course {course_id}...")
+def trigger_generation(course_id: int, db: Session = Depends(get_db)):
+    """Triggers the ProfessorBot to generate questions deterministically across the syllabus."""
+    print(f"Triggering deterministic question generation for course {course_id}...")
     planner = TopicPlanner(db)
     rag = RAGService(db, Embedder(db))
     bot = ProfessorBot(db, rag, planner)
-    res = bot.generate_questions_for_course(course_id, total_marks=total_marks)
+    res = bot.generate_questions_for_course(course_id)
     print(f"Generation result: {res}")
     return {"status": "Generation request processed", "details": res}
 
@@ -182,40 +182,68 @@ def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
     return {"status": course.ingestion_status.value}
 
 
+# --- Lazy-Loaded Singletons for Stability ---
+class AIServices:
+    _instance = None
+    
+    def __init__(self, db: Session):
+        print("[*] Initializing Global AI Services (Lazy-Load)...")
+        self.embedder = Embedder(db)
+        self.rag = RAGService(db, self.embedder)
+        self.eval_svc = EvaluationService(db, self.rag)
+        self.planner = TopicPlanner(db)
+        self.bot = ProfessorBot(db, self.rag, self.planner)
+
+    @classmethod
+    def get(cls, db: Session):
+        if cls._instance is None:
+            cls._instance = cls(db)
+        # Update current DB session for all services
+        cls._instance.planner.db = db
+        cls._instance.bot.db = db
+        cls._instance.eval_svc.db = db
+        cls._instance.eval_svc.rag_service.db = db
+        cls._instance.eval_svc.rag_service.embedder.db = db
+        return cls._instance
+
+def clean_context_label(text: str) -> str:
+    """Removes Section/Chapter numbering from UI labels."""
+    import re
+    if not text: return "Reading"
+    # Removes "Section 80.1", "Chapter 5", etc. case-insensitive
+    text = re.sub(r"(?i)(?:section|chapter|ch|unit)\s*\d+(\.\d+)*[:\- ]*", "", text)
+    return text.strip() or "Reading"
+
 @app.get("/professor/simulate/next")
-def get_next_simulation_question(course_id: int, exclude_ids: str = "", history: str = "", db: Session = Depends(get_db)):
-    """Fetch a question for simulation/testing with variety and adaptive history support."""
-    # Parse history if provided (format: q|a,q|a)
-    parsed_history = []
-    if history:
-        for turn in history.split(","):
-            if "|" in turn:
-                q, a = turn.split("|", 1)
-                parsed_history.append({"q": q, "a": a})
+def get_next_simulation_question(course_id: int, exclude_ids: str = None, history: str = None, db: Session = Depends(get_db)):
+    """Fetch a question for simulation/testing using deterministic selection and live generation."""
+    try:
+        services = AIServices.get(db)
+        
+        # 1. Fetch instructions for this course (from existing quiz)
+        quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
+        services.bot.instructions = quiz_config.instructions if quiz_config else None
+        
+        # 2. Live Selection
+        exclude_list = [int(i) for i in exclude_ids.split(",") if i.isdigit()] if exclude_ids else None
+        chunk, author = services.planner.select_next_topic(course_id=course_id, used_chunk_ids=exclude_list)
+        if not chunk:
+            raise HTTPException(status_code=404, detail="No unique topics found. Review syllabus or clear history.")
 
-    # Always use the Adaptive Bot Strategy for Simulation
-    planner = TopicPlanner(db)
-    rag = RAGService(db, Embedder(db))
-    bot = ProfessorBot(db, rag, planner)
-    
-    # Fetch instructions for this course (from existing quiz)
-    quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
-    bot.instructions = quiz_config.instructions if quiz_config else None
-    
-    # generate_single_question now handles Phase 0 (Greeting) and Graph-RAG
-    question = bot.generate_single_question(course_id, history=parsed_history, is_simulation=True)
-    
-    if question:
-        return {
-            "id": question.id, 
-            "text": question.question_text, 
-            "answer": question.ideal_answer, 
-            "status": question.status.value,
-            "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Simulation"
-        }
-
-    # If we reach here, tell the user WHY.
-    raise HTTPException(status_code=503, detail="The AI is currently processing or rate-limited. Please ensure syllabus data is uploaded and wait a moment.")
+        # 3. Live Generation
+        question = services.bot.generate_single_question(chunk, author=author)
+        
+        if question:
+            return {
+                "id": question.id, 
+                "text": question.question_text, 
+                "answer": question.ideal_answer, 
+                "status": question.status.value,
+                "context": clean_context_label(question.subsection.section.title) if question.subsection else "Assessment Simulation"
+            }
+    except (Exception, StopIteration) as e:
+        print(f"[!] Simulation Error: {e}")
+        raise HTTPException(status_code=500, detail="AI generation interrupted. Please try again.")
 
 @app.post("/professor/questions/{question_id}/rank")
 def rank_question(question_id: int, interaction: str, db: Session = Depends(get_db)):
@@ -360,10 +388,6 @@ def start_quiz(quiz_id: int, data: dict, db: Session = Depends(get_db)):
         if provided_password != quiz.password:
             raise HTTPException(status_code=401, detail="Invalid access password")
 
-    rag = RAGService(db, Embedder(db))
-    eval_svc = EvaluationService(db, rag)
-    manager = QuizManager(db, eval_svc)
-    
     return {"quiz_id": quiz_id, "status": "authorized"}
 
 @app.post("/student/quiz/{quiz_id}/submit")
@@ -372,65 +396,102 @@ def submit_answer(
     data: dict, 
     db: Session = Depends(get_db)
 ):
-    """Submits an answer for evaluation and audit logging."""
-    rag = RAGService(db, Embedder(db))
-    eval_svc = EvaluationService(db, rag)
-    manager = QuizManager(db, eval_svc)
-    
-    result = manager.submit_answer(
-        quiz_id=quiz_id,
-        question_id=data.get("question_id"),
-        answer_text=data.get("answer"),
-        student_name=data.get("student_name"),
-        enrollment_id=data.get("enrollment_id")
-    )
-    return result
+    print(f"DEBUG: Processing answer for Quiz {quiz_id}, Question {data.get('question_id')}, Student {data.get('enrollment_id')}")
+    try:
+        services = AIServices.get(db)
+        manager = QuizManager(db, services.eval_svc)
+        
+        result = manager.submit_answer(
+            quiz_id=quiz_id,
+            question_id=data.get("question_id"),
+            answer_text=data.get("answer"),
+            student_name=data.get("student_name"),
+            enrollment_id=data.get("enrollment_id")
+        )
+        return result
+    except (Exception, StopIteration) as e:
+        print(f"CRITICAL ERROR in submit_answer: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="The evaluation service is temporarily busy. Please try resubmitting.")
 
 @app.get("/student/quiz/{quiz_id}/next-question")
-def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: str = None, exclude_ids: str = "", db: Session = Depends(get_db)):
-    """Fetch the next adaptive question based on student performance."""
+def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: str = None, exclude_ids: str = None, db: Session = Depends(get_db)):
+    """Fetch the next deterministic question for the student quiz session."""
     quiz = db.query(Quiz).get(quiz_id)
-    if not quiz:
-        raise HTTPException(status_code=404, detail="Quiz not found")
-
-    # 1. Fetch Student History (Transcripts)
-    transcripts = db.query(Transcript).filter_by(
-        quiz_id=quiz_id,
-        enrollment_id=enrollment_id
-    ).order_by(Transcript.created_at.desc()).limit(3).all()
-
-    history = []
-    for t in transcripts:
-        history.append({
-            "q": t.question.question_text if t.question else "",
-            "a": t.student_answer
-        })
-
-    # 2. Adaptive Generation JIT (<5s target)
-    planner = TopicPlanner(db)
-    rag = RAGService(db, Embedder(db))
-    bot = ProfessorBot(db, rag, planner)
-    bot.instructions = quiz.instructions # ENSURE INSTRUCTIONS ARE PASSED
+    # 1. Detect Session State (History, Struggle, Reactions)
+    last_transcripts = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).limit(3).all()
     
-    # Pass 15+ pre-generated IDs to avoid direct duplicates, but generate JIT for adaptivity
-    exclude_list = [int(i) for i in exclude_ids.split(",") if i.strip()]
-    
-    # We strictly use JIT generation for students to ensure instruction adherence
-    question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True, student_name=student_name)
-    
-    # If first JIT attempt fails (e.g. topic selected was empty), try one more time
-    if not question:
-        question = bot.generate_single_question(quiz.course_id, history=history, is_simulation=True, student_name=student_name)
+    last_transcript = last_transcripts[0] if last_transcripts else None
+    student_struggled = False
+    last_answer = None
+    current_chunk_turn_count = 0
+    current_chunk_id = None
 
-    if not question:
-        raise HTTPException(status_code=404, detail="The Professor is busy formulating your next challenge. Please refresh in a moment.")
+    if last_transcript:
+        last_answer = last_transcript.student_answer
+        answer_low = (last_answer or "").lower()
+        if any(k in answer_low for k in ["don't know", "dont know", "skip", "clueless", "no idea"]):
+            student_struggled = True
+        elif last_transcript.score is not None and last_transcript.score < 0.3: # Threshold for follow-up vs new topic
+            student_struggled = True
+        
+        # Track turns of the same chunk
+        from ..database.models.question import Question
+        q = db.query(Question).get(last_transcript.question_id)
+        if q:
+            current_chunk_id = q.chunk_id
+            # Count turns for this chunk in recent history
+            for t in last_transcripts:
+                t_q = db.query(Question).get(t.question_id)
+                if t_q and t_q.chunk_id == current_chunk_id:
+                    current_chunk_turn_count += 1
+                else:
+                    break
 
-    return {
-        "id": question.id, 
-        "text": question.question_text, 
-        "answer": "HIDDEN_DURING_QUIZ", # SECURITY: Never leak the answer to the student
-        "context": f"{question.subsection.section.chapter.title} > {question.subsection.section.title}" if question.subsection else "Adaptive Quiz"
-    }
+    # 2. Topic Selection Logic
+    try:
+        services = AIServices.get(db)
+        services.bot.instructions = quiz.instructions 
+        
+        # Stay on same topic if turn_count < 3 and not struggling
+        chunk = None
+        progression_type = "FUNDAMENTAL"
+        
+        if current_chunk_id and current_chunk_turn_count < 3 and not student_struggled:
+            from ..database.models.chunk import Chunk
+            chunk = db.query(Chunk).get(current_chunk_id)
+            if current_chunk_turn_count > 0:
+                progression_type = "FOLLOW_UP"
+
+        # If we need a new chunk
+        author = None
+        if not chunk:
+            chunk, author = services.planner.select_next_topic(course_id=quiz.course_id, enrollment_id=enrollment_id, quiz_id=quiz_id)
+            progression_type = "FUNDAMENTAL"
+        else:
+            # Detect author for current chunk manually if staying on same topic
+            author = services.planner.get_chunk_author(chunk)
+        
+        if not chunk:
+            raise HTTPException(status_code=404, detail="Syllabus coverage complete or no unique topics left.")
+
+        # 3. Live Generation
+        print(f"DEBUG: Requesting {progression_type} question for Chunk {chunk.id} (Author: {author})")
+        question = services.bot.generate_single_question(chunk, author=author, student_struggled=student_struggled, last_answer=last_answer, progression_type=progression_type)
+        
+        if not question:
+            raise HTTPException(status_code=500, detail="Failed to generate assessment question.")
+
+        return {
+            "id": question.id, 
+            "text": question.question_text, 
+            "answer": "HIDDEN_DURING_QUIZ", 
+            "context": clean_context_label(question.subsection.section.title) if question.subsection else "Syllabus Assessment"
+        }
+    except (Exception, StopIteration) as e:
+        print(f"[!] get_student_next_question Error: {e}")
+        raise HTTPException(status_code=500, detail="The tutor is thinking... please refresh in a moment.")
 
 # --- Audit & Management Endpoints ---
 
