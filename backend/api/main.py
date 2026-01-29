@@ -610,3 +610,73 @@ def export_transcript(transcript_id: int, db: Session = Depends(get_db)):
         media_type="text/plain",
         headers={"Content-Disposition": f"attachment; filename=transcript_{base_t.enrollment_id}.txt"}
     )
+
+@app.get("/professor/transcript/{transcript_id}/export-pdf")
+def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
+    """Exports the full dialogue of a student's assessment session as a PDF file."""
+    import fitz # type: ignore
+    import io
+    
+    base_t = db.query(Transcript).get(transcript_id)
+    if not base_t:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    
+    # Fetch all interactions for this specific student in this quiz
+    all_interactions = db.query(Transcript).filter_by(
+        quiz_id=base_t.quiz_id, 
+        enrollment_id=base_t.enrollment_id
+    ).order_by(Transcript.created_at).all()
+    
+    # Create PDF document
+    doc = fitz.open()
+    page = doc.new_page()
+    where = fitz.Point(50, 50)
+    
+    # Header
+    page.insert_text(where, "EDU RANK ASSESSMENT TRANSCRIPT", fontsize=16, color=(0, 0, 1))
+    where.y += 30
+    
+    metadata = [
+        f"STUDENT: {base_t.student_name}",
+        f"ENROLLMENT: {base_t.enrollment_id}",
+        f"QUIZ ID: {base_t.quiz_id}",
+        f"DATE: {base_t.created_at.strftime('%Y-%m-%d %H:%M:%S') if base_t.created_at else 'N/A'}"
+    ]
+    
+    for line in metadata:
+        page.insert_text(where, line, fontsize=11)
+        where.y += 20
+        
+    where.y += 10
+    page.insert_text(where, "=" * 80, fontsize=10)
+    where.y += 30
+    
+    # Content
+    for i, t in enumerate(all_interactions):
+        # Check if we need a new page
+        if where.y > 750:
+            page = doc.new_page()
+            where = fitz.Point(50, 50)
+            
+        q_text = t.question.question_text if t.question else "N/A"
+        page.insert_text(where, f"Q{i+1}: {q_text}", fontsize=11, fontname="helv-bold")
+        where.y += 20
+        
+        # Simple wrap logic (very basic)
+        answer = f"STUDENT: {t.student_answer}"
+        page.insert_text(where, answer, fontsize=10)
+        where.y += 30
+        
+        page.insert_text(where, "-" * 80, fontsize=8, color=(0.5, 0.5, 0.5))
+        where.y += 20
+
+    # Save to stream
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=transcript_{base_t.enrollment_id}.pdf"}
+    )
