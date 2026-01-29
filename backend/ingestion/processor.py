@@ -35,6 +35,9 @@ class MaterialProcessor:
             extracted_data = self._extract_structure(file_path, file_type)
             if not extracted_data:
                 print(f"[!] INGESTION ABORTED: No data extracted.")
+                if course:
+                    course.ingestion_status = IngestionStatus.FAILED
+                    self.db.commit()
                 return
                 
             self._store_hierarchy(course_id, extracted_data)
@@ -49,6 +52,7 @@ class MaterialProcessor:
             print(f"🔗 View proof: Professor Dashboard (Knowledge Section)")
             print(f"{'='*60}\n")
         except Exception as e:
+            self.db.rollback() # Ensure transaction is rolled back so status update can proceed
             course = self.db.query(Course).get(course_id)
             if course:
                 course.ingestion_status = IngestionStatus.FAILED

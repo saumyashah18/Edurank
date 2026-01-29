@@ -78,9 +78,7 @@ export const ProfessorDashboard: React.FC = () => {
             formData.append('file', file);
 
             try {
-                await client.post('/professor/upload/1', formData, {
-                    headers: { 'Content-Type': 'multipart/form-data' }
-                });
+                await client.post('/professor/upload/1', formData);
                 setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'ready' } : f));
             } catch (err) {
                 setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'failed' } : f));

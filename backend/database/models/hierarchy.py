@@ -32,6 +32,7 @@ class Subsection(BaseModel):
     section = relationship("Section", back_populates="subsections")
     materials = relationship("RawMaterial", back_populates="subsection", cascade="all, delete-orphan")
     chunks = relationship("Chunk", back_populates="subsection", cascade="all, delete-orphan")
+    questions = relationship("Question", cascade="all, delete-orphan")
 
 class RawMaterial(BaseModel):
     __tablename__ = "raw_materials"

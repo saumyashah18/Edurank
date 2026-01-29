@@ -9,5 +9,4 @@ python-multipart
 python-dotenv
 openai
 pymupdf
-
-
+psycopg2-binary

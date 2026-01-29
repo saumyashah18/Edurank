@@ -118,6 +118,7 @@ def get_professor_assessments(db: Session = Depends(get_db)):
 
 def run_material_ingestion(course_id: int, file_path: str):
     """Background worker with its own DB session."""
+    from ..database.models.course import Course, IngestionStatus
     db = SessionLocal()
     try:
         print(f"DEBUG: Starting background ingestion for {file_path}")
@@ -126,6 +127,13 @@ def run_material_ingestion(course_id: int, file_path: str):
         print(f"DEBUG: Background ingestion complete for {file_path}")
     except Exception as e:
         print(f"ERROR in background ingestion: {e}")
+        try:
+            course = db.query(Course).get(course_id)
+            if course:
+                course.ingestion_status = IngestionStatus.FAILED
+                db.commit()
+        except Exception as db_err:
+            print(f"CRITICAL: Failed to update course status to FAILED: {db_err}")
     finally:
         db.close()
 

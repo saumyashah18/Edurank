@@ -17,13 +17,17 @@ class Chunk(BaseModel):
     subsection_id = Column(Integer, ForeignKey("subsections.id"))
     
     subsection = relationship("Subsection", back_populates="chunks")
+    
+    # Relationships for cascading deletes
+    source_relations = relationship("KnowledgeRelation", foreign_keys="[KnowledgeRelation.source_id]", cascade="all, delete-orphan")
+    target_relations = relationship("KnowledgeRelation", foreign_keys="[KnowledgeRelation.target_id]", cascade="all, delete-orphan")
 
 class KnowledgeRelation(BaseModel):
     __tablename__ = "knowledge_relations"
     
-    source_id = Column(Integer, ForeignKey("chunks.id"), nullable=False)
-    target_id = Column(Integer, ForeignKey("chunks.id"), nullable=False)
+    source_id = Column(Integer, ForeignKey("chunks.id", ondelete="CASCADE"), nullable=False)
+    target_id = Column(Integer, ForeignKey("chunks.id", ondelete="CASCADE"), nullable=False)
     relation_type = Column(String, default="connection") # e.g. "critique", "pre-requisite"
     
-    source = relationship("Chunk", foreign_keys=[source_id])
-    target = relationship("Chunk", foreign_keys=[target_id])
+    source = relationship("Chunk", foreign_keys=[source_id], overlaps="source_relations")
+    target = relationship("Chunk", foreign_keys=[target_id], overlaps="target_relations")

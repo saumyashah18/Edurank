@@ -23,8 +23,8 @@ class Question(BaseModel):
 
     
     # Track source for grounding
-    chunk_id = Column(Integer, ForeignKey("chunks.id"))
-    subsection_id = Column(Integer, ForeignKey("subsections.id"))
+    chunk_id = Column(Integer, ForeignKey("chunks.id", ondelete="CASCADE"))
+    subsection_id = Column(Integer, ForeignKey("subsections.id", ondelete="CASCADE"))
     
     chunk = relationship("Chunk")
-    subsection = relationship("Subsection")
+    subsection = relationship("Subsection", overlaps="questions")
