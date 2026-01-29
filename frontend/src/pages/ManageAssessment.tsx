@@ -130,6 +130,17 @@ export const ManageAssessment: React.FC = () => {
         }
     };
 
+    const handleExport = async () => {
+        if (!selectedStudent) return;
+        try {
+            // Use window.location to trigger a direct download for simplicity
+            const downloadUrl = `${client.defaults.baseURL}/professor/transcript/${selectedStudent.id}/export-pdf`;
+            window.open(downloadUrl, '_blank');
+        } catch (err) {
+            alert("Export failed");
+        }
+    };
+
     return (
         <Layout title={`Manage Assessment: ${quizMeta?.title || ''}`}>
             <div className="flex-1 flex flex-col overflow-hidden min-h-0">
@@ -269,7 +280,7 @@ export const ManageAssessment: React.FC = () => {
                                             <h4 className="text-lg font-bold text-gray-100">{selectedStudent.name}</h4>
                                             <span className="px-2 py-0.5 bg-accent/10 text-accent rounded text-[10px] font-mono">{selectedStudent.enrollment_id}</span>
                                         </div>
-                                        <Button variant="secondary" icon={FileDown} onClick={() => { }}>Export History</Button>
+                                        <Button variant="secondary" icon={FileDown} onClick={handleExport}>Export History</Button>
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-4 scrollbar-hide">
                                         {studentMessages.map((msg, i) => (

@@ -17,6 +17,7 @@ interface ChatMessage {
     text: string;
     context?: string;
     questionId?: number;
+    rank?: 'like' | 'dislike';
 }
 
 export const ProfessorDashboard: React.FC = () => {
@@ -190,6 +191,7 @@ export const ProfessorDashboard: React.FC = () => {
 
     const rankQuestion = async (id: number, action: 'like' | 'dislike') => {
         try {
+            setMessages(prev => prev.map(m => m.questionId === id ? { ...m, rank: action } : m));
             await client.post(`/professor/questions/${id}/rank`, null, { params: { interaction: action } });
         } catch (err) {
             console.error("Ranking failed", err);
@@ -269,8 +271,18 @@ export const ProfessorDashboard: React.FC = () => {
 
                                 {msg.role === 'bot' && msg.questionId && (
                                     <div className="flex gap-4 mt-4 pt-4 border-t border-white/5">
-                                        <button onClick={() => rankQuestion(msg.questionId!, 'like')} className="p-1 hover:text-accent transition-colors"><ThumbsUp size={16} /></button>
-                                        <button onClick={() => rankQuestion(msg.questionId!, 'dislike')} className="p-1 hover:text-red-400 transition-colors"><ThumbsDown size={16} /></button>
+                                        <button
+                                            onClick={() => rankQuestion(msg.questionId!, 'like')}
+                                            className={`p-1 transition-colors ${msg.rank === 'like' ? 'text-blue-500' : 'hover:text-accent'}`}
+                                        >
+                                            <ThumbsUp size={16} />
+                                        </button>
+                                        <button
+                                            onClick={() => rankQuestion(msg.questionId!, 'dislike')}
+                                            className={`p-1 transition-colors ${msg.rank === 'dislike' ? 'text-red-500' : 'hover:text-red-400'}`}
+                                        >
+                                            <ThumbsDown size={16} />
+                                        </button>
                                         <button onClick={() => fetchNextQuestion()} className="p-1 hover:text-gray-100 transition-colors"><RefreshCw size={16} /></button>
                                         <button onClick={() => navigator.clipboard.writeText(msg.text)} className="p-1 hover:text-gray-100 transition-colors"><Copy size={16} /></button>
                                     </div>
