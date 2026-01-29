@@ -51,8 +51,13 @@ class Embedder:
         # Hugging Face Inference API
         all_embeddings = []
         for text in texts:
-            emb = self.client.feature_extraction(text)
-            all_embeddings.append(emb)
+            try:
+                emb = self.client.feature_extraction(text)
+                all_embeddings.append(emb)
+            except (Exception, StopIteration) as e:
+                print(f"[!] Embedding Error for text: {e}")
+                # Fallback to zero vector if one chunk fails
+                all_embeddings.append([0.0] * self.dimension)
             
         embeddings = np.array(all_embeddings).astype('float32')
         
@@ -92,8 +97,12 @@ class RAGService:
         """
         Retrieves chunks using Hugging Face embeddings and FAISS similarity.
         """
-        query_embedding = self.embedder.client.feature_extraction(query)
-        query_embedding = np.array(query_embedding).astype('float32').reshape(1, -1)
+        try:
+            query_embedding = self.embedder.client.feature_extraction(query)
+            query_embedding = np.array(query_embedding).astype('float32').reshape(1, -1)
+        except (Exception, StopIteration) as e:
+            print(f"[!] RAG Retrieval Embedding Error: {e}")
+            return []
         
         distances, indices = self.embedder.index.search(query_embedding, top_k)
         

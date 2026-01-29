@@ -65,17 +65,18 @@ class TopicPlanner:
                                 "author": author
                             })
 
-        # 4. Selection Bias Choice
+        # 4. Deterministic Selection (Follow Syllabus Order)
         if candidates:
-            # Separate candidates into 'diverse' (not recent author) and 'others'
+            # We follow the syllabus order (Chapter -> Section -> Subsection)
+            # instead of random choice, so the teacher's preview order matches the student's.
             diverse_candidates = [c for c in candidates if c["author"] != "unknown" and c["author"] not in recent_authors]
             
             if diverse_candidates:
-                chosen = random.choice(diverse_candidates)
+                chosen = diverse_candidates[0] # Pick the FIRST (chronological) instead of random
                 return chosen["chunk"], chosen["author"]
             
-            # Fallback to random if no diverse candidates found (or all authors are 'unknown')
-            chosen = random.choice(candidates)
+            # Fallback to the first available candidate
+            chosen = candidates[0]
             return chosen["chunk"], chosen["author"]
         
         return None, None

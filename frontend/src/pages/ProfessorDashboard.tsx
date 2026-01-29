@@ -113,20 +113,26 @@ export const ProfessorDashboard: React.FC = () => {
         }
     };
 
+    const isSimulatingRef = useRef(false);
+
     const fetchNextQuestion = async (historyStr: string = "") => {
+        if (isSimulatingRef.current) return;
+        isSimulatingRef.current = true;
         setIsTyping(true);
         try {
             const { data } = await client.get('/professor/simulate/next', {
                 params: {
                     course_id: 1,
                     exclude_ids: seenQuestionIds.join(','),
-                    history: historyStr
+                    history: historyStr,
+                    instructions: instructions // Pass current instructions from UI
                 }
             });
 
             if (data.reset) {
                 setSeenQuestionIds([]);
                 setMessages(prev => [...prev, { id: Date.now().toString(), role: 'bot', text: '🔄 Variety cycle complete. Restarting...' }]);
+                isSimulatingRef.current = false;
                 return fetchNextQuestion();
             }
 
@@ -142,6 +148,7 @@ export const ProfessorDashboard: React.FC = () => {
             setMessages(prev => [...prev, { id: Date.now().toString(), role: 'bot', text: "No fresh questions. Click 'Generate' to expand!" }]);
         } finally {
             setIsTyping(false);
+            isSimulatingRef.current = false;
         }
     };
 

@@ -62,6 +62,20 @@ load_dotenv()
 @app.on_event("startup")
 def startup_event():
     init_db()
+    # Ensure default course exists for simulation
+    db = SessionLocal()
+    try:
+        from ..database.models.course import Course, IngestionStatus
+        course = db.query(Course).filter_by(id=1).first()
+        if not course:
+            print("INFO: Creating default course (ID: 1) for simulation...")
+            default_course = Course(id=1, title="General Assessment Course", description="Default course for AI simulation")
+            db.add(default_course)
+            db.commit()
+    except Exception as e:
+        print(f"ERROR: Could not create default course: {e}")
+    finally:
+        db.close()
 
 # --- Auth & User Endpoints ---
 
@@ -215,14 +229,17 @@ def clean_context_label(text: str) -> str:
     return text.strip() or "Reading"
 
 @app.get("/professor/simulate/next")
-def get_next_simulation_question(course_id: int, exclude_ids: str = None, history: str = None, db: Session = Depends(get_db)):
+def get_next_simulation_question(course_id: int, exclude_ids: str = None, history: str = None, instructions: str = None, db: Session = Depends(get_db)):
     """Fetch a question for simulation/testing using deterministic selection and live generation."""
     try:
         services = AIServices.get(db)
         
-        # 1. Fetch instructions for this course (from existing quiz)
-        quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
-        services.bot.instructions = quiz_config.instructions if quiz_config else None
+        # 1. Use manual instructions if provided (from UI), else fetch latest from DB
+        if instructions:
+            services.bot.instructions = instructions
+        else:
+            quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
+            services.bot.instructions = quiz_config.instructions if quiz_config else None
         
         # 2. Live Selection
         exclude_list = [int(i) for i in exclude_ids.split(",") if i.isdigit()] if exclude_ids else None
@@ -231,7 +248,18 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = None, histor
             raise HTTPException(status_code=404, detail="No unique topics found. Review syllabus or clear history.")
 
         # 3. Live Generation
-        question = services.bot.generate_single_question(chunk, author=author)
+        # For simulation, we can also pass history turns if we want full chat awareness
+        history_turns = []
+        if history:
+            # history is comma-separated pairs like "q1|a1,q2|a2"
+            pairs = history.split(",")
+            for p in pairs:
+                if "|" in p:
+                    q, a = p.split("|", 1)
+                    history_turns.append({"role": "bot", "text": q})
+                    history_turns.append({"role": "user", "text": a})
+
+        question = services.bot.generate_single_question(chunk, course_id=course_id, author=author, history_turns=history_turns)
         
         if question:
             return {
@@ -241,6 +269,9 @@ def get_next_simulation_question(course_id: int, exclude_ids: str = None, histor
                 "status": question.status.value,
                 "context": clean_context_label(question.subsection.section.title) if question.subsection else "Assessment Simulation"
             }
+    except HTTPException:
+        # Re-raise known HTTP exceptions (like 404 No topics)
+        raise
     except (Exception, StopIteration) as e:
         print(f"[!] Simulation Error: {e}")
         raise HTTPException(status_code=500, detail="AI generation interrupted. Please try again.")
@@ -420,28 +451,46 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: st
     """Fetch the next deterministic question for the student quiz session."""
     quiz = db.query(Quiz).get(quiz_id)
     # 1. Detect Session State (History, Struggle, Reactions)
-    last_transcripts = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).limit(3).all()
+    last_transcripts = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).limit(10).all()
+    
+    # [PREVENT DOUBLE GENERATION]
+    # Check if a question was recently generated but not yet answered by this student.
+    # If the last transcript has no answer, or if we have a pending question generated < 5s ago, wait.
+    from ..database.models.question import Question
+    from datetime import datetime, timedelta
+    
+    # Fetch all questions generated for this student in this quiz session through transcripts
+    # Or more simply: If the most recent transcript has no score/eval, it might be the previous turn's question.
+    # However, in this system, Transcript is created AFTER answer submission.
+    # So we check if the last generated question for this sub/chunk/quiz is already in a transcript.
+    # A better way: Check the Questions table for PENDING questions in this subsection created very recently.
     
     last_transcript = last_transcripts[0] if last_transcripts else None
     student_struggled = False
-    last_answer = None
-    current_chunk_turn_count = 0
+    history_turns = []
     current_chunk_id = None
+    current_chunk_turn_count = 0
+    
+    if last_transcripts:
+        # Build history for AI awareness (Reverse to chronological)
+        for t in reversed(last_transcripts):
+            if t.question:
+                history_turns.append({"role": "bot", "text": t.question.question_text})
+            history_turns.append({"role": "user", "text": t.student_answer})
 
-    if last_transcript:
         last_answer = last_transcript.student_answer
         answer_low = (last_answer or "").lower()
         if any(k in answer_low for k in ["don't know", "dont know", "skip", "clueless", "no idea"]):
             student_struggled = True
-        elif last_transcript.score is not None and last_transcript.score < 0.3: # Threshold for follow-up vs new topic
+        elif last_transcript.score is not None and last_transcript.score < 0.3:
             student_struggled = True
         
         # Track turns of the same chunk
-        from ..database.models.question import Question
         q = db.query(Question).get(last_transcript.question_id)
+        current_chunk_turn_count = 0
+        current_chunk_id = None
         if q:
             current_chunk_id = q.chunk_id
-            # Count turns for this chunk in recent history
             for t in last_transcripts:
                 t_q = db.query(Question).get(t.question_id)
                 if t_q and t_q.chunk_id == current_chunk_id:
@@ -454,7 +503,6 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: st
         services = AIServices.get(db)
         services.bot.instructions = quiz.instructions 
         
-        # Stay on same topic if turn_count < 3 and not struggling
         chunk = None
         progression_type = "FUNDAMENTAL"
         
@@ -464,31 +512,42 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: st
             if current_chunk_turn_count > 0:
                 progression_type = "FOLLOW_UP"
 
-        # If we need a new chunk
         author = None
         if not chunk:
             chunk, author = services.planner.select_next_topic(course_id=quiz.course_id, enrollment_id=enrollment_id, quiz_id=quiz_id)
             progression_type = "FUNDAMENTAL"
         else:
-            # Detect author for current chunk manually if staying on same topic
             author = services.planner.get_chunk_author(chunk)
         
         if not chunk:
-            raise HTTPException(status_code=404, detail="Syllabus coverage complete or no unique topics left.")
+            raise HTTPException(status_code=404, detail="Syllabus coverage complete.")
 
-        # 3. Live Generation
-        print(f"DEBUG: Requesting {progression_type} question for Chunk {chunk.id} (Author: {author})")
-        question = services.bot.generate_single_question(chunk, author=author, student_struggled=student_struggled, last_answer=last_answer, progression_type=progression_type)
+        # 3. Live Generation with Teacher-Style Awareness
+        print(f"DEBUG: Requesting {progression_type} question for Chunk {chunk.id}")
+        
+        # We no longer replay the exact liked question. 
+        # Instead, we generate a NEW one, but the bot will now fetch 'liked/disliked' examples 
+        # from this course to understand the teacher's style.
+        question = services.bot.generate_single_question(
+            chunk, 
+            course_id=quiz.course_id, 
+            author=author, 
+            student_struggled=student_struggled, 
+            history_turns=history_turns, 
+            progression_type=progression_type
+        )
         
         if not question:
-            raise HTTPException(status_code=500, detail="Failed to generate assessment question.")
+            raise HTTPException(status_code=500, detail="Failed to generate question.")
 
         return {
             "id": question.id, 
             "text": question.question_text, 
             "answer": "HIDDEN_DURING_QUIZ", 
-            "context": clean_context_label(question.subsection.section.title) if question.subsection else "Syllabus Assessment"
+            "context": clean_context_label(question.subsection.section.title) if question.subsection else "Assessment"
         }
+    except HTTPException:
+        raise
     except (Exception, StopIteration) as e:
         print(f"[!] get_student_next_question Error: {e}")
         raise HTTPException(status_code=500, detail="The tutor is thinking... please refresh in a moment.")

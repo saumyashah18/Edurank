@@ -59,14 +59,12 @@ class LLMService:
                     return "ERROR: No response from OpenRouter."
                 return completion.choices[0].message.content
         except (Exception, StopIteration) as e:
-            # Prevent StopIteration leaking in generators/coroutines
+            # Prevent StopIteration leaking in generators/coroutines or unexpected HuggingFace/AI library behaviors
             error_str = str(e)
-            if "429" in error_str or "rate_limit" in error_str.lower():
-                print(f"[*] Rate Limit Hit: {e}")
-                return "ERROR_RATE_LIMIT"
-            
             print(f"LLM Error during generation: {error_str}")
-            return "ERROR: AI generation failed. This might be a temporary connection issue."
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                return "ERROR_RATE_LIMIT"
+            return f"ERROR: AI generation failed. Details: {error_str[:100]}"
 
 # Global instance
 llm = LLMService()

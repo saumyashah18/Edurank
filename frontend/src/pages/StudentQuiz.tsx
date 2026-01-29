@@ -62,7 +62,11 @@ export const StudentQuiz: React.FC = () => {
         }
     };
 
+    const isFetchingRef = React.useRef(false);
+
     const fetchQuestion = async () => {
+        if (isFetchingRef.current) return;
+        isFetchingRef.current = true;
         setLoading(true);
         try {
             const { data } = await client.get(`/student/quiz/${quizId}/next-question`, {
@@ -82,11 +86,15 @@ export const StudentQuiz: React.FC = () => {
                 setCurrentQuestionId(data.id);
                 setCurrentQuestionIdx(prev => prev + 1);
             }
-        } catch (err) {
+        } catch (err: any) {
             console.error("Failed to fetch question", err);
-            setIsFinished(true);
+            // Only finish if it's a real 404/500, not just a race condition
+            if (err.response?.status !== 429) {
+                setIsFinished(true);
+            }
         } finally {
             setLoading(false);
+            isFetchingRef.current = false;
         }
     };
 
@@ -115,6 +123,12 @@ export const StudentQuiz: React.FC = () => {
             alert("Submission failed");
         } finally {
             setIsSubmitting(false);
+        }
+    };
+
+    const handleFinish = () => {
+        if (window.confirm("Are you sure you want to finish the assessment early? This action cannot be undone.")) {
+            setIsFinished(true);
         }
     };
 
@@ -153,7 +167,16 @@ export const StudentQuiz: React.FC = () => {
                             <User size={16} className="text-accent" />
                             <span className="font-medium">{studentInfo?.name} ({studentInfo?.enrollmentId})</span>
                         </div>
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-3">
+                            <Button
+                                onClick={handleFinish}
+                                variant="secondary"
+                                className="px-4 py-2 rounded-2xl h-auto text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20"
+                                disabled={loading || isSubmitting}
+                            >
+                                <CheckCircle2 size={14} className="mr-2" />
+                                Finish Assessment
+                            </Button>
                             <span className={`flex items-center gap-2 px-4 py-2 rounded-2xl border border-accent/20 ${timeLeft !== null && timeLeft < 300 ? 'text-red-400 bg-red-400/10 animate-pulse' : 'text-accent bg-accent/10'}`}>
                                 <Timer size={16} />
                                 {timeLeft !== null ? formatTime(timeLeft) : '--:--'}

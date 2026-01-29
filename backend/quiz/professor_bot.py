@@ -44,23 +44,54 @@ class ProfessorBot:
         return list(set(filters)) if filters else None
 
 
-    def generate_single_question(self, chunk: Chunk, author: str = None, student_struggled: bool = False, last_answer: str = None, progression_type: str = "FUNDAMENTAL"):
-        """Generates ONE assessment question with optional struggle, reaction, and progression logic."""
+    def generate_single_question(self, chunk: Chunk, course_id: int = None, author: str = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, progression_type: str = "FUNDAMENTAL"):
+        """Generates ONE assessment question with history awareness and feedback-driven learning."""
         if not chunk:
             return None
 
         # 1. Graph-Aware Retrieval
         related_chunks = self._fetch_graph_relations(chunk.id)
 
-        # 2. Assessment Generation
+        # 2. Feedback-Driven Context (Learning from Likes/Dislikes)
+        feedback_examples = ""
+        if course_id:
+            feedback_examples = self._get_feedback_context(course_id)
+
+        # 3. Assessment Generation
         return self._create_question_from_m_chunk(
             chunk, 
             author=author,
             related_chunks=related_chunks, 
             student_struggled=student_struggled, 
-            last_answer=last_answer,
+            history_turns=history_turns,
+            feedback_examples=feedback_examples,
             progression_type=progression_type
         )
+
+    def _get_feedback_context(self, course_id: int) -> str:
+        """Fetches upvoted and downvoted questions to reinforce the teacher's style preferences."""
+        from ..database.models.question import Question
+        from ..database.models.hierarchy import Subsection
+        
+        # Get 3 best and 3 worst examples for this course
+        liked = self.db.query(Question).join(Subsection).filter(Subsection.section_id != None).filter(Question.upvotes > 0).order_by(Question.upvotes.desc()).limit(3).all()
+        disliked = self.db.query(Question).join(Subsection).filter(Subsection.section_id != None).filter(Question.downvotes > 0).order_by(Question.downvotes.desc()).limit(3).all()
+        
+        context = ""
+        if liked:
+            context += "\n### TEACHER'S PREFERRED STYLE (LIKED EXAMPLES):\n"
+            for q in liked:
+                context += f"- LIKED: \"{q.question_text}\"\n"
+        
+        if disliked:
+            context += "\n### STYLES TO AVOID (DISLIKED EXAMPLES):\n"
+            for q in disliked:
+                context += f"- DISLIKED: \"{q.question_text}\"\n"
+                
+        if context:
+            context += "\nINSTRUCTION: Analyze the teacher's preferences above. Mimic the depth, tone, and complexity of 'LIKED' examples and strictly avoid the style/patterns seen in 'DISLIKED' examples."
+            
+        return context
 
     def _fetch_graph_relations(self, chunk_id: int):
         """Fetches chunks connected via the deterministic KnowledgeRelation graph."""
@@ -68,35 +99,46 @@ class ProfessorBot:
         relations = self.db.query(KnowledgeRelation).filter_by(source_id=chunk_id).limit(2).all()
         return [self.db.query(Chunk).get(rel.target_id) for rel in relations]
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, last_answer: str = None, progression_type: str = "FUNDAMENTAL"):
-        """Generates a question following structural assessment logic with conversational reaction."""
+    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", progression_type: str = "FUNDAMENTAL"):
+        """Generates a question following structural assessment logic with high-fidelity system instruction compliance and teacher feedback adaptation."""
         
         graph_context = ""
         if related_chunks:
             graph_context = "\n### RELATED COMPARATIVE MATERIALS:\n"
             for rc in related_chunks:
-                graph_context += f"- RELATED CONTENT: {rc.content[:500]}...\n"
+                graph_context += f"- {rc.content[:500]}...\n"
 
-        # 1. Minimal Prompt for Assessment Generation
-        reaction_instruction = ""
-        if last_answer:
-            reaction_instruction = f"""
-            ### DIALOGUE CONTEXT:
-            The student's previous answer was: "{last_answer}"
-            STRICT RULE: Begin your response by acknowledging and reacting to this specific answer in a professional yet conversational way. Do not just move to the next question.
-            """
+        # 1. Contextual History & Greeting Suppression
+        history_context = ""
+        greeting_constraint = "STRICT RULE: Do NOT start your response with 'Good morning', 'Hello', 'Class', 'Alright', or any introductory greeting. Jump directly into the conversation or the question."
+        
+        if history_turns:
+            history_context = "### CONVERSATION HISTORY (Most Recent Last):\n"
+            for turn in history_turns:
+                history_context += f"{turn['role'].upper()}: {turn['text']}\n"
+            history_context += f"\n{greeting_constraint} Acknowledge the student's previous point briefly, then move to the next concept."
+        else:
+            # First question of the session
+            history_context = "### START OF SESSION\n"
+            # We allow ONE brief greeting only if it's the very first message
+            greeting_constraint = "You may provide ONE brief welcoming sentence (max 10 words) as this is the start of the session. Then proceed to the question."
 
         author_display = author if author and author.lower() != "unknown" else "the author"
         
-        if progression_type == "FUNDAMENTAL":
-            progression_instruction = f"Begin by providing a brief, conversational conceptual setup that explains the core theme of this reading to meet the student halfway. Then, ask a SHARP, BROAD COMPREHENSION question about a central concept. YOU MUST MENTION THE AUTHOR ({author_display}) explicitly in the question."
-        else:
-            progression_instruction = "Briefly connect your follow-up to the student's previous point. Then, ask a question that probes a specific nuance of the reading. Do NOT repeat or rephrase the previous question."
-
         user_prompt = f"""
-        MODE: Live Tutorial Assessment
-        PROGRESSION: {progression_type}
-        {reaction_instruction}
+        [SYSTEM ROLE]
+        You are an elite academic examiner. You MUST strictly adhere to the STYLE GUIDELINE below.
+        
+        [STYLE GUIDELINE]
+        {self.instructions if self.instructions else "Standard academic tone, professional and concise."}
+        {feedback_examples}
+
+        [PROGRESSION MODE]
+        {progression_type}: {"Provide a brief conversational setup + sharp question mentioning " + author_display if progression_type == "FUNDAMENTAL" else "Connect to previous point + probe specific nuance."}
+
+        [CONTEXTUAL CONSTRAINTS]
+        {history_context}
+        {greeting_constraint}
         
         [SOURCE MATERIAL]
         READING AUTHOR: {author_display}
@@ -104,19 +146,14 @@ class ProfessorBot:
         CONTENT: {chunk.content}
         {graph_context}
 
-        [INSTRUCTION]
-        1. {progression_instruction}
-        2. {"If the student is struggling or said 'I don't know', do not rephrase. Instead, ask a clarifying question about a simpler part of the same reading to help them re-engage." if student_struggled else ""}
-        3. STRICTLY ONE QUESTION: Ask exactly one clear question at the end of your conversational setup.
-        4. NO NUMERICAL REFERENCES: NEVER mention "page X", "chapter Y", "section Z.W", or "lines A-B". Use conceptual descriptions instead (e.g., "In the beginning of the argument..." or "When discussing the state...").
-        5. CONVERSATIONAL SETUP: Do not just jump into the question. Explain the context or the 'why' behind the question in 1-2 sentences.
+        [TASKS]
+        1. {"Ask a clarifying question about a simpler part" if student_struggled else "Ask exactly ONE high-level question."}
+        2. NO NUMERICAL REFERENCES (page X, etc.).
+        3. NO MULTIPLE QUESTIONS.
         
         ### OUTPUT FORMAT (MANDATORY):
-        Question: [Your conversational reaction + context + the new question text]
-        Ideal Answer: [A concise one-sentence summary of the correct answer]
-
-        ### STYLE GUIDELINE:
-        {self.instructions if self.instructions else "Standard academic tone."}
+        Question: [Your response text]
+        Ideal Answer: [One-sentence summary]
         """
 
         system_prompt = self.instructions if self.instructions else "You are an expert academic examiner."
