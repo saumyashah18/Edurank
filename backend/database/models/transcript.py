@@ -24,8 +24,8 @@ class Transcript(BaseModel):
     student_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     student_name = Column(String)
     enrollment_id = Column(String)
-    quiz_id = Column(Integer, ForeignKey("quizzes.id"))
-    question_id = Column(Integer, ForeignKey("questions.id"))
+    quiz_id = Column(Integer, ForeignKey("quizzes.id", ondelete="CASCADE"))
+    question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"))
     
     student_answer = Column(Text)
     ai_evaluation = Column(Text) # Store AI reasoning
@@ -37,4 +37,4 @@ class Transcript(BaseModel):
     
     student = relationship("User")
     quiz = relationship("Quiz", back_populates="transcripts")
-    question = relationship("Question")
+    question = relationship("Question", overlaps="transcripts")

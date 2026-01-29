@@ -28,3 +28,4 @@ class Question(BaseModel):
     
     chunk = relationship("Chunk")
     subsection = relationship("Subsection", overlaps="questions")
+    transcripts = relationship("Transcript", cascade="all, delete-orphan")

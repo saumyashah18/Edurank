@@ -654,20 +654,22 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
     # Content
     for i, t in enumerate(all_interactions):
         # Check if we need a new page
-        if where.y > 750:
+        if where.y > 700:
             page = doc.new_page()
             where = fitz.Point(50, 50)
             
-        q_text = t.question.question_text if t.question else "N/A"
-        page.insert_text(where, f"Q{i+1}: {q_text}", fontsize=11, fontname="helv-bold")
-        where.y += 20
+        q_text = f"Q{i+1}: {t.question.question_text if t.question else 'N/A'}"
+        # Use insert_textbox for automatic wrapping
+        rect_q = fitz.Rect(50, where.y, 550, where.y + 60)
+        page.insert_textbox(rect_q, q_text, fontsize=11, fontname="helv", align=0)
+        where.y += 40
         
-        # Simple wrap logic (very basic)
         answer = f"STUDENT: {t.student_answer}"
-        page.insert_text(where, answer, fontsize=10)
-        where.y += 30
+        rect_a = fitz.Rect(50, where.y, 550, where.y + 100)
+        page.insert_textbox(rect_a, answer, fontsize=10, fontname="helv", align=0)
+        where.y += 60
         
-        page.insert_text(where, "-" * 80, fontsize=8, color=(0.5, 0.5, 0.5))
+        page.draw_line(fitz.Point(50, where.y), fitz.Point(550, where.y), color=(0.8, 0.8, 0.8), width=0.5)
         where.y += 20
 
     # Save to stream

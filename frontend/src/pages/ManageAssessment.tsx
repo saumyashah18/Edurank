@@ -5,6 +5,7 @@ import { Input } from '../components/Input';
 import { FileDown, User, Eye, History, Send } from 'lucide-react';
 import { useParams } from 'react-router-dom';
 import client from '../api/client';
+import { copyToClipboard } from '../utils/clipboard';
 
 interface Participant {
     id: number;

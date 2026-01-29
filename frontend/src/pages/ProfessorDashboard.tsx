@@ -5,6 +5,7 @@ import { Input } from '../components/Input';
 import { Layout } from '../components/Layout';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { copyToClipboard } from '../utils/clipboard';
 
 interface FileUpload {
     name: string;
@@ -179,7 +180,8 @@ export const ProfessorDashboard: React.FC = () => {
         if (!quizPassword) return alert("Please set a password for the student link.");
 
         try {
-            const quizId = currentQuizId || 1; // Fallback to 1 if not set
+            if (!currentQuizId) return alert("Please generate questions first before finalizing.");
+            const quizId = currentQuizId;
             await client.post(`/professor/quiz/${quizId}/finalize`, null, { params: { password: quizPassword } });
             setFinalLink(`${window.location.origin}/student/quiz/${quizId}`);
         } catch (err) {
@@ -282,7 +284,10 @@ export const ProfessorDashboard: React.FC = () => {
                                             <ThumbsDown size={16} />
                                         </button>
                                         <button onClick={() => fetchNextQuestion()} className="p-1 hover:text-gray-100 transition-colors"><RefreshCw size={16} /></button>
-                                        <button onClick={() => navigator.clipboard.writeText(msg.text)} className="p-1 hover:text-gray-100 transition-colors"><Copy size={16} /></button>
+                                        <button onClick={() => {
+                                            const success = copyToClipboard(msg.text);
+                                            if (success) alert("Copied to clipboard!");
+                                        }} className="p-1 hover:text-gray-100 transition-colors"><Copy size={16} /></button>
                                     </div>
                                 )}
                             </div>
@@ -362,7 +367,10 @@ export const ProfessorDashboard: React.FC = () => {
                                         <p className="text-sm text-accent truncate">{finalLink}</p>
                                     </div>
                                     <button
-                                        onClick={() => navigator.clipboard.writeText(finalLink)}
+                                        onClick={() => {
+                                            const success = copyToClipboard(finalLink);
+                                            if (success) alert("Link copied!");
+                                        }}
                                         className="p-3 bg-accent/10 rounded-xl text-accent hover:bg-accent/20"
                                     >
                                         <Copy size={18} />

@@ -50,6 +50,24 @@ def fix_postgres_schema():
             ADD CONSTRAINT questions_subsection_id_fkey 
             FOREIGN KEY (subsection_id) REFERENCES subsections(id) ON DELETE CASCADE;
         """))
+
+        # 5. Update transcripts table (quiz_id)
+        print("Updating transcripts(quiz_id)...")
+        conn.execute(text("""
+            ALTER TABLE transcripts 
+            DROP CONSTRAINT IF EXISTS transcripts_quiz_id_fkey,
+            ADD CONSTRAINT transcripts_quiz_id_fkey 
+            FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE;
+        """))
+
+        # 6. Update transcripts table (question_id)
+        print("Updating transcripts(question_id)...")
+        conn.execute(text("""
+            ALTER TABLE transcripts 
+            DROP CONSTRAINT IF EXISTS transcripts_question_id_fkey,
+            ADD CONSTRAINT transcripts_question_id_fkey 
+            FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE;
+        """))
         
         conn.commit()
         print("Successfully applied Foreign Key Cascades!")
