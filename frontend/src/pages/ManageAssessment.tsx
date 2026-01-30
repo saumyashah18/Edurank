@@ -85,7 +85,8 @@ export const ManageAssessment: React.FC = () => {
                 params: {
                     course_id: quizMeta.course_id,
                     exclude_ids: seenQuestionIds.join(','),
-                    history: historyStr
+                    history: historyStr,
+                    instructions: quizMeta.instructions
                 }
             });
 

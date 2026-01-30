@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Embedder:
-    def __init__(self, db: Session, model_name: str = "Alibaba-NLP/gte-Qwen2-7B-instruct"):
+    def __init__(self, db: Session, model_name: str = "BAAI/bge-large-en-v1.5"):
         self.db = db
         self.model_name = model_name
-        # GTE-Qwen2-7B-instruct dimension is 3584
-        self.dimension = 3584 
+        # BGE-Large-en-v1.5 dimension is 1024
+        self.dimension = 1024 
         self.index_path = "faiss_index/index.faiss"
         self.hf_token = os.getenv("HF_TOKEN")
         

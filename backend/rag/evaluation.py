@@ -12,7 +12,7 @@ class EvaluationService:
 
 
 
-    def evaluate_answer(self, question_text: str, student_answer: str, ideal_answer: str):
+    def evaluate_answer(self, question_text: str, student_answer: str, ideal_answer: str, instructions: str = None):
         """
         Evaluates a student answer strictly as an Audit / Dialogue record.
         IMPORTANT: This does NOT vectorize or embed the student's answer into the knowledge base.
@@ -28,8 +28,11 @@ class EvaluationService:
         chunk_ids = [c.id for c in context_chunks]
 
         prompt = f"""
-        You are an academic evaluator. Evaluate the student's answer based on the provided reference material and the ideal answer.
+        You are an academic evaluator. Evaluate the student's answer based on the provided reference material, the ideal answer, and the specific grading guidelines below.
         
+        [GRADING STYLE GUIDELINES]
+        {instructions if instructions else "Standard academic evaluation, fair and rigorous."}
+
         Question: {question_text}
         Ideal Answer: {ideal_answer}
         Reference Material: {context_text}

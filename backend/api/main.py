@@ -206,27 +206,16 @@ def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
 
 # --- Lazy-Loaded Singletons for Stability ---
 class AIServices:
-    _instance = None
-    
     def __init__(self, db: Session):
-        print("[*] Initializing Global AI Services (Lazy-Load)...")
         self.embedder = Embedder(db)
         self.rag = RAGService(db, self.embedder)
         self.eval_svc = EvaluationService(db, self.rag)
         self.planner = TopicPlanner(db)
         self.bot = ProfessorBot(db, self.rag, self.planner)
 
-    @classmethod
-    def get(cls, db: Session):
-        if cls._instance is None:
-            cls._instance = cls(db)
-        # Update current DB session for all services
-        cls._instance.planner.db = db
-        cls._instance.bot.db = db
-        cls._instance.eval_svc.db = db
-        cls._instance.eval_svc.rag_service.db = db
-        cls._instance.eval_svc.rag_service.embedder.db = db
-        return cls._instance
+def get_ai_services(db: Session = Depends(get_db)):
+    """FastAPI dependency to provide isolated AI services per request."""
+    return AIServices(db)
 
 def clean_context_label(text: str) -> str:
     """Removes Section/Chapter numbering from UI labels."""
@@ -237,11 +226,16 @@ def clean_context_label(text: str) -> str:
     return text.strip() or "Reading"
 
 @app.get("/professor/simulate/next")
-def get_next_simulation_question(course_id: int, exclude_ids: str = None, history: str = None, instructions: str = None, db: Session = Depends(get_db)):
+def get_next_simulation_question(
+    course_id: int, 
+    exclude_ids: str = None, 
+    history: str = None, 
+    instructions: str = None, 
+    db: Session = Depends(get_db),
+    services: AIServices = Depends(get_ai_services)
+):
     """Fetch a question for simulation/testing using deterministic selection and live generation."""
     try:
-        services = AIServices.get(db)
-        
         # 1. Use manual instructions if provided (from UI), else fetch latest from DB
         if instructions:
             services.bot.instructions = instructions
@@ -433,11 +427,11 @@ def start_quiz(quiz_id: int, data: dict, db: Session = Depends(get_db)):
 def submit_answer(
     quiz_id: int, 
     data: dict, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    services: AIServices = Depends(get_ai_services)
 ):
     print(f"DEBUG: Processing answer for Quiz {quiz_id}, Question {data.get('question_id')}, Student {data.get('enrollment_id')}")
     try:
-        services = AIServices.get(db)
         manager = QuizManager(db, services.eval_svc)
         
         result = manager.submit_answer(
@@ -455,23 +449,37 @@ def submit_answer(
         raise HTTPException(status_code=500, detail="The evaluation service is temporarily busy. Please try resubmitting.")
 
 @app.get("/student/quiz/{quiz_id}/next-question")
-def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: str = None, exclude_ids: str = None, db: Session = Depends(get_db)):
+def get_student_next_question(
+    quiz_id: int, 
+    enrollment_id: str, 
+    student_name: str = None, 
+    exclude_ids: str = None, 
+    db: Session = Depends(get_db),
+    services: AIServices = Depends(get_ai_services)
+):
     """Fetch the next deterministic question for the student quiz session."""
     quiz = db.query(Quiz).get(quiz_id)
     # 1. Detect Session State (History, Struggle, Reactions)
+    # Count how many questions this student has ALREADY answered in this quiz
+    # We count transcripts as finished interactions
+    answered_count = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).count()
+    
+    # 7TH TURN TERMINATION (STRICT)
+    if answered_count >= 6:
+        return {
+            "id": 999999, # Dummy ID for termination
+            "text": "thank you for the user test assessment, you may now click to Finish assessment",
+            "answer": "HIDDEN",
+            "context": "Complete",
+            "reset": True # Frontend knows to finish
+        }
+
     last_transcripts = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).limit(10).all()
     
     # [PREVENT DOUBLE GENERATION]
     # Check if a question was recently generated but not yet answered by this student.
-    # If the last transcript has no answer, or if we have a pending question generated < 5s ago, wait.
     from ..database.models.question import Question
     from datetime import datetime, timedelta
-    
-    # Fetch all questions generated for this student in this quiz session through transcripts
-    # Or more simply: If the most recent transcript has no score/eval, it might be the previous turn's question.
-    # However, in this system, Transcript is created AFTER answer submission.
-    # So we check if the last generated question for this sub/chunk/quiz is already in a transcript.
-    # A better way: Check the Questions table for PENDING questions in this subsection created very recently.
     
     last_transcript = last_transcripts[0] if last_transcripts else None
     student_struggled = False
@@ -485,7 +493,7 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: st
             if t.question:
                 history_turns.append({"role": "bot", "text": t.question.question_text})
             history_turns.append({"role": "user", "text": t.student_answer})
-
+ 
         last_answer = last_transcript.student_answer
         answer_low = (last_answer or "").lower()
         if any(k in answer_low for k in ["don't know", "dont know", "skip", "clueless", "no idea"]):
@@ -495,7 +503,6 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: st
         
         # Track turns of the same chunk
         q = db.query(Question).get(last_transcript.question_id)
-        current_chunk_turn_count = 0
         current_chunk_id = None
         if q:
             current_chunk_id = q.chunk_id
@@ -505,44 +512,73 @@ def get_student_next_question(quiz_id: int, enrollment_id: str, student_name: st
                     current_chunk_turn_count += 1
                 else:
                     break
-
+ 
     # 2. Topic Selection Logic
     try:
-        services = AIServices.get(db)
         services.bot.instructions = quiz.instructions 
         
         chunk = None
         progression_type = "FUNDAMENTAL"
         
-        if current_chunk_id and current_chunk_turn_count < 3 and not student_struggled:
+        # Apply strict 3+3 filter
+        # Turn 0, 1, 2 -> Reading 1 (Scott)
+        # Turn 3, 4, 5 -> Reading 2 (Citizens)
+        filters = ["Scott", "Seeing like a State"] if answered_count < 3 else ["Citizens", "Ordinary", "Anjaria"]
+        
+        if current_chunk_id and current_chunk_turn_count < 2 and not student_struggled:
+            # Check if current chunk matches the required reading filter
             from ..database.models.chunk import Chunk
             chunk = db.query(Chunk).get(current_chunk_id)
-            if current_chunk_turn_count > 0:
-                progression_type = "FOLLOW_UP"
+            
+            # If we are supposed to switch readings (at turn 3), force a skip
+            is_switch_turn = (answered_count == 3)
+            if is_switch_turn:
+                chunk = None
+            else:
+                if current_chunk_turn_count > 0:
+                    progression_type = "FOLLOW_UP"
 
         author = None
         if not chunk:
-            chunk, author = services.planner.select_next_topic(course_id=quiz.course_id, enrollment_id=enrollment_id, quiz_id=quiz_id)
+            chunk, author = services.planner.select_next_topic(
+                course_id=quiz.course_id, 
+                enrollment_id=enrollment_id, 
+                quiz_id=quiz_id,
+                filter_keywords=filters
+            )
             progression_type = "FUNDAMENTAL"
         else:
             author = services.planner.get_chunk_author(chunk)
         
         if not chunk:
-            raise HTTPException(status_code=404, detail="Syllabus coverage complete.")
+            # Fallback if specific filtered reading is not found, try any topic
+            chunk, author = services.planner.select_next_topic(course_id=quiz.course_id, enrollment_id=enrollment_id, quiz_id=quiz_id)
+            if not chunk:
+                return {
+                    "id": 999999,
+                    "text": "thank you for the user test assessment, you may now click to Finish assessment",
+                    "answer": "HIDDEN",
+                    "context": "Complete",
+                    "reset": True
+                }
 
         # 3. Live Generation with Teacher-Style Awareness
-        print(f"DEBUG: Requesting {progression_type} question for Chunk {chunk.id}")
+        print(f"DEBUG: Requesting {progression_type} question for Chunk {chunk.id} (Turn {answered_count})")
         
-        # We no longer replay the exact liked question. 
-        # Instead, we generate a NEW one, but the bot will now fetch 'liked/disliked' examples 
-        # from this course to understand the teacher's style.
+        # Calculate Phase for prompt
+        # Phase 1: Turns 0-1
+        # Phase 2: Turns 2-3
+        # Phase 3: Turns 4-5
+        phase_num = (answered_count // 2) + 1
+        
         question = services.bot.generate_single_question(
             chunk, 
             course_id=quiz.course_id, 
             author=author, 
             student_struggled=student_struggled, 
             history_turns=history_turns, 
-            progression_type=progression_type
+            progression_type=progression_type,
+            phase=f"PHASE {phase_num}" # New param for prompt
         )
         
         if not question:

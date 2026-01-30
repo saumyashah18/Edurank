@@ -17,9 +17,6 @@ class ProfessorBot:
         self.llm = llm
         self.instructions = None # To be fetched per course
 
-
-
-
     def generate_questions_for_course(self, course_id: int):
         """[DEPRECATED] Pool generation is now live. This returns a message indicating the system is ready."""
         return "Assessment Engine is Active: Questions are now generated live for each session."
@@ -44,7 +41,7 @@ class ProfessorBot:
         return list(set(filters)) if filters else None
 
 
-    def generate_single_question(self, chunk: Chunk, course_id: int = None, author: str = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, progression_type: str = "FUNDAMENTAL"):
+    def generate_single_question(self, chunk: Chunk, course_id: int = None, author: str = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, progression_type: str = "FUNDAMENTAL", phase: str = "PHASE 1"):
         """Generates ONE assessment question with history awareness and feedback-driven learning."""
         if not chunk:
             return None
@@ -65,7 +62,8 @@ class ProfessorBot:
             student_struggled=student_struggled, 
             history_turns=history_turns,
             feedback_examples=feedback_examples,
-            progression_type=progression_type
+            progression_type=progression_type,
+            phase=phase
         )
 
     def _get_feedback_context(self, course_id: int) -> str:
@@ -99,7 +97,7 @@ class ProfessorBot:
         relations = self.db.query(KnowledgeRelation).filter_by(source_id=chunk_id).limit(2).all()
         return [self.db.query(Chunk).get(rel.target_id) for rel in relations]
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", progression_type: str = "FUNDAMENTAL"):
+    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", progression_type: str = "FUNDAMENTAL", phase: str = "PHASE 1"):
         """Generates a question following structural assessment logic with high-fidelity system instruction compliance and teacher feedback adaptation."""
         
         graph_context = ""
@@ -136,9 +134,18 @@ class ProfessorBot:
         [PROGRESSION MODE]
         {progression_type}: {"Provide a brief conversational setup + sharp question mentioning " + author_display if progression_type == "FUNDAMENTAL" else "Connect to previous point + probe specific nuance."}
 
+        [CURRENT PHASE: {phase}]
+        - PHASE 1 (Basic Comprehension): Focus on central themes or core concepts from the text.
+        - PHASE 2 (Reflection): Probe deeper into the "Why" behind the author's logic and internal reasoning.
+        - PHASE 3 (Critique & Beyond): Pivot to critical reflection. Ask where the logic fails or what is overlooked.
+        STRICT RULE: You MUST tailor your question depth strictly to the goal of {phase}.
+
         [CONTEXTUAL CONSTRAINTS]
         {history_context}
         {greeting_constraint}
+
+        [PRIMARY DIRECTIVE]
+        You MUST strictly follow these instructions: {self.instructions if self.instructions else "None."}
         
         [SOURCE MATERIAL]
         READING AUTHOR: {author_display}
@@ -154,6 +161,9 @@ class ProfessorBot:
         ### OUTPUT FORMAT (MANDATORY):
         Question: [Your response text]
         Ideal Answer: [One-sentence summary]
+
+        ### FINAL CHECK: 
+        Did you follow the instructions? -> {self.instructions if self.instructions else "N/A"}
         """
 
         system_prompt = self.instructions if self.instructions else "You are an expert academic examiner."
@@ -186,6 +196,11 @@ class ProfessorBot:
             
         if text == "ERROR_RATE_LIMIT":
             return "The AI tutor is a bit busy right now (rate limit reached). Please wait a few seconds and try again.", "AI_RATE_LIMITED"
+
+        # Handle technical errors from AIService gracefully
+        if text.startswith("ERROR:"):
+            return "I'm having a brief technical connection issue. Please try your response again, or click 'Refetch' to try a new question.", "AI_ERROR"
+
         # 0. Clean DeepSeek Reasoning/Think Tags
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         text = re.sub(r"<think>.*", "", text, flags=re.DOTALL).strip() # Handle unclosed tags
@@ -217,7 +232,7 @@ class ProfessorBot:
             if match and match.group(1).strip():
                 a_text = match.group(1).strip()
                 break
-
+        
         # Fallback 1: If tags exist but are in common markdown list format without explicit labels
         if not q_text and "?" in text:
             # If there's an 'Ideal Answer' tag further down, split it
@@ -227,18 +242,18 @@ class ProfessorBot:
                     q_text = parts[0].strip()
                     a_text = parts[1].strip()
             else:
-                # Assume the whole thing is the question if it's short
-                if len(text) < 1000:
-                    q_text = text.strip()
-                    a_text = "CONSULT_SOURCE_MATERIAL"
-
+                # Assume the whole thing is the question if it contains a question mark
+                # Removed the length restriction to support verbose Gemini/DeepSeek responses
+                q_text = text.strip()
+                a_text = "CONSULT_SOURCE_MATERIAL"
+        
         if q_text:
             # Clean up residual markdown (bolding tokens, hashes)
             q_text = re.sub(r"^\*\*+|^\#+|\*\*+$", "", q_text).strip()
             q_text = re.sub(r"(?i)^Question:\s*", "", q_text).strip()
             
             # STRIKE SECTION/CHAPTER NUMBERS (Fail-safe for user requirement)
-            # Removes "Section 80.1", "Chapter 5", "lines 10-20", etc.
+            # Removes "Section 80.1", "Chapter 5", etc.
             q_text = re.sub(r"(?i)section\s*\d+(\.\d+)*", "", q_text)
             q_text = re.sub(r"(?i)chapter\s*\d+", "", q_text)
             q_text = re.sub(r"(?i)line[s]?\s*\d+([-]\d+)?", "", q_text)
@@ -248,7 +263,7 @@ class ProfessorBot:
             q_text = re.sub(r"(?i)unknown", "the author", q_text)
             
             q_text = re.sub(r"\s+", " ", q_text).strip() # Clean extra spaces
-
+            
             if a_text:
                 a_text = re.sub(r"^\*\*+|^\#+|\*\*+$", "", a_text).strip()
                 a_text = re.sub(r"(?i)^Ideal Answer:\s*", "", a_text).strip()
@@ -259,5 +274,5 @@ class ProfessorBot:
         if "?" in text:
              pos = text.find("?")
              return text[:pos+1].strip(), text[pos+1:].strip() if len(text) > pos+1 else "CONSULT_SOURCE_MATERIAL"
-
+        
         return "I'm interested in hearing your perspective on this. Could you elaborate?", "PENDING_STUDENT_RESPONSE"

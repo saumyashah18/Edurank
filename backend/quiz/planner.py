@@ -40,9 +40,16 @@ class TopicPlanner:
         for chapter in chapters:
             for section in chapter.sections:
                 for subsection in section.subsections:
+                    # Filter by keywords if provided (STRICT COMPLIANCE)
                     matches_filter = True
                     if filter_keywords:
+                        # Fetch one chunk to check content if needed, but hierarchy matches are better
                         full_context = f"{chapter.title} {section.title} {subsection.title}".lower()
+                        # Also check the FIRST chunk of this subsection for author keywords
+                        sample_chunk = self.db.query(Chunk).filter_by(subsection_id=subsection.id).first()
+                        if sample_chunk:
+                            full_context += " " + sample_chunk.content[:1000].lower()
+                        
                         matches_filter = any(k.lower() in full_context for k in filter_keywords)
                     
                     if matches_filter:

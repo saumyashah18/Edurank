@@ -32,10 +32,14 @@ class QuizManager:
         
         eval_result = {"score": 0.0, "reasoning": "Evaluation failed"}
         if question:
+            quiz = self.db.query(Quiz).get(quiz_id)
+            instructions = quiz.instructions if quiz else None
+            
             eval_result = self.eval_service.evaluate_answer(
                 question_text=question.question_text,
                 student_answer=answer_text,
-                ideal_answer=question.ideal_answer
+                ideal_answer=question.ideal_answer,
+                instructions=instructions
             )
 
         # Log Transcript (Academic Audit)

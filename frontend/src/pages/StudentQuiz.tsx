@@ -18,6 +18,7 @@ export const StudentQuiz: React.FC = () => {
     const [seenIds, setSeenIds] = useState<number[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentQuestionId, setCurrentQuestionId] = useState<number | null>(null);
+    const chatEndRef = React.useRef<HTMLDivElement>(null);
 
     // Timer & Metadata state
     const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -46,6 +47,11 @@ export const StudentQuiz: React.FC = () => {
 
         return () => clearInterval(interval);
     }, [timeLeft, isFinished]);
+
+    // Auto-scroll logic
+    useEffect(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages, loading, isSubmitting]);
 
     const fetchInitialData = async () => {
         try {
@@ -161,7 +167,6 @@ export const StudentQuiz: React.FC = () => {
         <Layout title="Student Assessment">
             <div className="flex-1 overflow-hidden p-8 flex flex-col items-center min-h-0">
                 <div className="w-full max-w-4xl h-full flex flex-col gap-6 min-h-0">
-                    {/* Header Info */}
                     <div className="flex items-center justify-between text-gray-400 text-sm">
                         <div className="flex items-center gap-3 bg-white/[0.03] px-4 py-2 rounded-2xl border border-white/5">
                             <User size={16} className="text-accent" />
@@ -184,7 +189,6 @@ export const StudentQuiz: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Chat Container */}
                     <div className="flex-1 bg-panel border border-border rounded-[32px] overflow-hidden flex flex-col shadow-2xl min-h-0">
                         <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scrollbar-hide">
                             {messages.map((msg) => (
@@ -195,16 +199,19 @@ export const StudentQuiz: React.FC = () => {
                                     {msg.text}
                                 </div>
                             ))}
-                            {loading && (
-                                <div className="self-start bg-white/[0.03] rounded-[24px] p-4 flex gap-1 rounded-bl-none">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce [animation-delay:0.2s]" />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce [animation-delay:0.4s]" />
+                            {(loading || isSubmitting) && (
+                                <div className="self-start bg-white/[0.03] rounded-[24px] p-4 flex gap-2 items-center rounded-bl-none animate-in fade-in slide-in-from-bottom-1 duration-200">
+                                    <div className="flex gap-1">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce" />
+                                        <div className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:0.2s]" />
+                                        <div className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:0.4s]" />
+                                    </div>
+                                    <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest ml-1">AI Thinking...</span>
                                 </div>
                             )}
+                            <div ref={chatEndRef} />
                         </div>
 
-                        {/* Input Area */}
                         <div className="p-4 border-t border-border bg-white/[0.01]">
                             <form
                                 onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
