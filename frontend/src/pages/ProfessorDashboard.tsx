@@ -44,15 +44,31 @@ export const ProfessorDashboard: React.FC = () => {
 
     const [seenQuestionIds, setSeenQuestionIds] = useState<number[]>([]);
     const [inputMessage, setInputMessage] = useState('');
+    const inputRef = useRef<HTMLTextAreaElement>(null);
+    const initialTextRef = useRef('');
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
 
     const { isListening, startListening, stopListening } = useSpeechToText({
         onResult: (transcript) => {
-            setInputMessage(transcript);
+            const initial = initialTextRef.current;
+            const spacer = initial && !initial.endsWith(' ') ? ' ' : '';
+            setInputMessage(initial + spacer + transcript);
         }
     });
+
+    const handleStartListening = () => {
+        initialTextRef.current = inputMessage;
+        startListening();
+    };
+
+    useEffect(() => {
+        if (inputRef.current) {
+            inputRef.current.style.height = 'auto';
+            inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
+        }
+    }, [inputMessage]);
 
     const [ingestionStatus, setIngestionStatus] = useState<'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'>('PENDING');
 
@@ -346,33 +362,43 @@ export const ProfessorDashboard: React.FC = () => {
                     </div>
 
                     <div className="p-4 border-t border-border bg-white/[0.01]">
-                        <form onSubmit={handleSendMessage} className="flex gap-3">
-                            <input
-                                type="text"
+                        <form onSubmit={handleSendMessage} className="flex gap-3 items-end">
+                            <textarea
+                                ref={inputRef}
                                 value={inputMessage}
                                 onChange={(e) => setInputMessage(e.target.value)}
                                 placeholder="Type an answer to test AI adaptivity..."
-                                className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-colors"
+                                className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-colors resize-none overflow-hidden min-h-[52px] max-h-[200px]"
                                 disabled={isTyping}
+                                rows={1}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleSendMessage(e);
+                                    }
+                                }}
                             />
-                            <button
-                                type="button"
-                                onClick={isListening ? stopListening : startListening}
-                                className={`p-3 rounded-2xl transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
-                                title={isListening ? 'Stop Listening' : 'Start Speech to Text'}
-                            >
-                                {isListening ? <MicOff size={18} /> : <Mic size={18} />}
-                            </button>
-                            <Button
-                                type="submit"
-                                variant="secondary"
-                                className="px-6 rounded-2xl"
-                                disabled={!inputMessage.trim() || isTyping}
-                            >
-                                Send
-                            </Button>
+                            <div className="flex gap-2 mb-1">
+                                <button
+                                    type="button"
+                                    onClick={isListening ? stopListening : handleStartListening}
+                                    className={`p-3 rounded-2xl transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
+                                    title={isListening ? 'Stop Listening' : 'Start Speech to Text'}
+                                >
+                                    {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+                                </button>
 
+                                <Button
+                                    type="submit"
+                                    variant="secondary"
+                                    className="px-6 rounded-2xl h-11"
+                                    disabled={!inputMessage.trim() || isTyping}
+                                >
+                                    Send
+                                </Button>
+                            </div>
                         </form>
+
                     </div>
                 </div>
             </section>
