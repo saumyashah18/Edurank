@@ -4,6 +4,8 @@ import { Button } from '../components/Button';
 import { CheckCircle2, Timer, User, Send } from 'lucide-react';
 import { useLocation, useParams } from 'react-router-dom';
 import client from '../api/client';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { Mic, MicOff } from 'lucide-react';
 
 export const StudentQuiz: React.FC = () => {
     const { quizId } = useParams();
@@ -19,6 +21,12 @@ export const StudentQuiz: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [currentQuestionId, setCurrentQuestionId] = useState<number | null>(null);
     const chatEndRef = React.useRef<HTMLDivElement>(null);
+
+    const { isListening, startListening, stopListening } = useSpeechToText({
+        onResult: (transcript) => {
+            setAnswer(transcript);
+        }
+    });
 
     // Timer & Metadata state
     const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -230,6 +238,14 @@ export const StudentQuiz: React.FC = () => {
                                         }
                                     }}
                                 />
+                                <button
+                                    type="button"
+                                    onClick={isListening ? stopListening : startListening}
+                                    className={`p-3 rounded-2xl transition-colors h-[52px] w-[52px] flex items-center justify-center ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
+                                    title={isListening ? 'Stop Listening' : 'Start Speech to Text'}
+                                >
+                                    {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                                </button>
                                 <Button
                                     type="submit"
                                     variant="secondary"
@@ -238,6 +254,7 @@ export const StudentQuiz: React.FC = () => {
                                 >
                                     <Send size={18} />
                                 </Button>
+
                             </form>
                             <p className="text-[10px] text-center text-gray-500 mt-2 uppercase tracking-widest font-bold">
                                 Press Enter to send • Shift + Enter for new line

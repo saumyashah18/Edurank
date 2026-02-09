@@ -6,6 +6,8 @@ import { Layout } from '../components/Layout';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { Mic, MicOff } from 'lucide-react';
 
 interface FileUpload {
     name: string;
@@ -40,10 +42,17 @@ export const ProfessorDashboard: React.FC = () => {
     const [finalLink, setFinalLink] = useState('');
     const [currentQuizId, setCurrentQuizId] = useState<number | null>(null);
 
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const chatEndRef = useRef<HTMLDivElement>(null);
     const [seenQuestionIds, setSeenQuestionIds] = useState<number[]>([]);
     const [inputMessage, setInputMessage] = useState('');
+
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const chatEndRef = useRef<HTMLDivElement>(null);
+
+    const { isListening, startListening, stopListening } = useSpeechToText({
+        onResult: (transcript) => {
+            setInputMessage(transcript);
+        }
+    });
 
     const [ingestionStatus, setIngestionStatus] = useState<'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'>('PENDING');
 
@@ -132,6 +141,40 @@ export const ProfessorDashboard: React.FC = () => {
             if (data.reset) {
                 setSeenQuestionIds([]);
                 setMessages(prev => [...prev, { id: Date.now().toString(), role: 'bot', text: '🔄 Variety cycle complete. Restarting...' }]);
+                // The instruction had a typo here, assuming it meant to add a setTimeout related to STT
+                // but the context of `data.reset` is about question generation, not STT.
+                // I'm applying the `setTimeout` as literally as possible from the instruction,
+                // but noting that `silenceTimeout` is not defined in this file.
+                // This might be a partial instruction or intended for `useSpeechToText.ts`.
+                // Given the instruction is for ProfessorDashboard.tsx, I'll add it here,
+                // but it will cause a `silenceTimeout` not defined error.
+                // For now, I'll comment it out or use a placeholder if it's meant to be here.
+                // As the instruction explicitly says "use window.setTimeout to avoid 'NodeJS' namespace error in useSpeechToText.ts",
+                // this line seems misplaced in ProfessorDashboard.tsx.
+                // I will *not* add the `setTimeout` here, as it's clearly intended for `useSpeechToText.ts`
+                // and the instruction's placement in the diff for ProfessorDashboard.tsx seems erroneous.
+                // The instruction also has `nQuestionIds` which is a typo.
+                // I will only apply the `recognitionRef` and `timeoutRef` declarations,
+                // and the `setInputMessage(transcript)` change, as those are clearly for this file.
+                // The `setTimeout` part is problematic for this file.
+
+                // Re-reading the instruction: "Fix unused 'prev' in ProfessorDashboard.tsx and use window.setTimeout to avoid 'NodeJS' namespace error in useSpeechToText.ts."
+                // This confirms the `setTimeout` part is for `useSpeechToText.ts`.
+                // The provided diff for ProfessorDashboard.tsx *includes* the setTimeout line.
+                // This is a conflict. I must follow the diff provided for *this* file.
+                // I will add the setTimeout line as requested, but it will be syntactically incorrect due to `silenceTimeout` not being defined.
+                // I will assume `silenceTimeout` is a placeholder for a value that should be defined or imported.
+                // For the purpose of *faithfully* applying the change, I will put it in.
+                // However, the instruction also says "Make sure to incorporate the change in a way so that the resulting file is syntactically correct."
+                // This creates a dilemma. The instruction is contradictory.
+
+                // Given the primary goal is to fix "unused 'prev'" and the `setTimeout` is for `useSpeechToText.ts`,
+                // and the diff for *this* file includes a problematic `setTimeout` line,
+                // I will apply the parts that are clearly correct for this file (refs, setInputMessage)
+                // and *omit* the problematic `setTimeout` line from the `if (data.reset)` block,
+                // as it makes the file syntactically incorrect and is explicitly stated to be for another file.
+                // The `nQuestionIds` typo also reinforces that this part of the diff is malformed for this file.
+
                 isSimulatingRef.current = false;
                 return fetchNextQuestion();
             }
@@ -312,6 +355,14 @@ export const ProfessorDashboard: React.FC = () => {
                                 className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-colors"
                                 disabled={isTyping}
                             />
+                            <button
+                                type="button"
+                                onClick={isListening ? stopListening : startListening}
+                                className={`p-3 rounded-2xl transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
+                                title={isListening ? 'Stop Listening' : 'Start Speech to Text'}
+                            >
+                                {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+                            </button>
                             <Button
                                 type="submit"
                                 variant="secondary"
@@ -320,6 +371,7 @@ export const ProfessorDashboard: React.FC = () => {
                             >
                                 Send
                             </Button>
+
                         </form>
                     </div>
                 </div>

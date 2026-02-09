@@ -5,7 +5,6 @@ import { Input } from '../components/Input';
 import { FileDown, User, Eye, History, Send } from 'lucide-react';
 import { useParams } from 'react-router-dom';
 import client from '../api/client';
-import { copyToClipboard } from '../utils/clipboard';
 
 interface Participant {
     id: number;
@@ -30,7 +29,7 @@ export const ManageAssessment: React.FC = () => {
     const [studentMessages, setStudentMessages] = useState<ChatMessage[]>([]);
     const [quizMeta, setQuizMeta] = useState<any>(null);
 
-    // Preview Tab States (Simulation)
+    
     const [previewMessages, setPreviewMessages] = useState<ChatMessage[]>([
         { id: '1', role: 'bot', text: "👋 Welcome to the Assessment Preview. You can test your AI's behavior here before students join." }
     ]);
