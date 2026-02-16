@@ -71,7 +71,12 @@ class MaterialProcessor:
                 
                 full_text = ""
                 for i, page in enumerate(doc):
-                    page_text = page.get_text()
+                    # sort=True forces reading by physical layout (columns/blocks) vs stream
+                    page_text = page.get_text(sort=True) 
+                    
+                    if not page_text.strip():
+                        print(f"    [WARNING] Page {i+1} appears empty or scanned (no text layer found).")
+                    
                     full_text += page_text
                     # Print every 10 pages for large docs to avoid terminal flooding, or every page for small ones
                     if total_pages < 20 or (i + 1) % 10 == 0 or (i + 1) == total_pages:
@@ -161,6 +166,7 @@ class MaterialProcessor:
                     except Exception as sub_e:
                         print(f"    [SUBSECTION ERROR] {sub_e}")
                         self.db.rollback()
+                        raise sub_e
 
 
 

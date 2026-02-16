@@ -605,10 +605,14 @@ def list_student_transcripts(quiz_id: int, db: Session = Depends(get_db)):
     # Group by student to show unique participants
     participants = {}
     for t in transcripts:
-        key = f"{t.enrollment_id}_{t.student_name}"
+        # Robust key generation: prefer enrollment_id, fallback to name, fallback to ID
+        eid = t.enrollment_id or "Unknown_ID"
+        name = t.student_name or "Unknown_Student"
+        key = f"{eid}_{name}"
+        
         if key not in participants:
             participants[key] = {
-                "name": t.student_name,
+                "name": name,
                 "enrollment_id": t.enrollment_id,
                 "completed_at": t.created_at,
                 "id": t.id # Use one transcript ID as reference
@@ -623,9 +627,10 @@ def export_transcript(transcript_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Transcript not found")
     
     # Fetch all interactions for this specific student in this quiz
-    all_interactions = db.query(Transcript).filter_by(
-        quiz_id=base_t.quiz_id, 
-        enrollment_id=base_t.enrollment_id
+    # Use robust filtering: ensure we catch all turns for this student enrollment even if IDs vary slightly
+    all_interactions = db.query(Transcript).filter(
+        Transcript.quiz_id == base_t.quiz_id,
+        Transcript.enrollment_id == base_t.enrollment_id
     ).order_by(Transcript.created_at).all()
     
     content = f"--- EDU RANK ASSESSMENT TRANSCRIPT ---\n"
@@ -657,20 +662,69 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
     if not base_t:
         raise HTTPException(status_code=404, detail="Transcript not found")
     
-    # Fetch all interactions for this specific student in this quiz
-    all_interactions = db.query(Transcript).filter_by(
-        quiz_id=base_t.quiz_id, 
-        enrollment_id=base_t.enrollment_id
+    # Fetch all interactions
+    all_interactions = db.query(Transcript).filter(
+        Transcript.quiz_id == base_t.quiz_id,
+        Transcript.enrollment_id == base_t.enrollment_id
     ).order_by(Transcript.created_at).all()
     
     # Create PDF document
     doc = fitz.open()
     page = doc.new_page()
-    where = fitz.Point(50, 50)
     
+    # Initial cursor position
+    cursor_y = 50
+    page_height = 800
+    margin = 50
+    
+    def check_page_break(doc, page, y, needed_height):
+        """Adds a new page if content exceeds height."""
+        if y + needed_height > page_height:
+            page = doc.new_page()
+            return page, 50 # Reset y to top margin
+        return page, y
+
+    def write_wrapped_text(doc, page, y, text, fontsize=11, color=(0,0,0), bold=False):
+        """Writes text with word wrapping and pagination."""
+        fontname = "helv"  # Base font
+        line_height = fontsize + 4
+        rect_width = 500
+        x = 50
+        
+        # Approximate width calculation or character splitting
+        # PyMuPDF's insert_text is simple. Use fitz.TextLength for accurate width?
+        # For simplicity and speed without complex font loading:
+        # We will split by words and build lines.
+        
+        paragraphs = text.split('\n')
+        for p in paragraphs:
+            words = p.split()
+            current_line = ""
+            for word in words:
+                test_line = current_line + " " + word if current_line else word
+                # Fast width check: ~0.5 * fontsize * length (heuristic) 
+                # OR use fitz.get_text_length(test_line, fontname=fontname, fontsize=fontsize)
+                w = fitz.get_text_length(test_line, fontname=fontname, fontsize=fontsize)
+                if w < rect_width:
+                    current_line = test_line
+                else:
+                    # Draw current line
+                    page, y = check_page_break(doc, page, y, line_height)
+                    page.insert_text((x, y), current_line, fontsize=fontsize, fontname=fontname, color=color)
+                    y += line_height
+                    current_line = word # Start new line with word
+            
+            # Draw remaining line
+            if current_line:
+                page, y = check_page_break(doc, page, y, line_height)
+                page.insert_text((x, y), current_line, fontsize=fontsize, fontname=fontname, color=color)
+                y += line_height
+        
+        return page, y
+
     # Header
-    page.insert_text(where, "EDU RANK ASSESSMENT TRANSCRIPT", fontsize=16, color=(0, 0, 1))
-    where.y += 30
+    page.insert_text((50, cursor_y), "EDU RANK ASSESSMENT TRANSCRIPT", fontsize=16, color=(0, 0, 1))
+    cursor_y += 30
     
     metadata = [
         f"STUDENT: {base_t.student_name}",
@@ -680,34 +734,36 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
     ]
     
     for line in metadata:
-        page.insert_text(where, line, fontsize=11)
-        where.y += 20
+        page, cursor_y = check_page_break(doc, page, cursor_y, 20)
+        page.insert_text((50, cursor_y), line, fontsize=11)
+        cursor_y += 20
         
-    where.y += 10
-    page.insert_text(where, "=" * 80, fontsize=10)
-    where.y += 30
+    cursor_y += 10
+    page.insert_text((50, cursor_y), "=" * 80, fontsize=10)
+    cursor_y += 30
     
     # Content
     for i, t in enumerate(all_interactions):
-        # Check if we need a new page
-        if where.y > 700:
-            page = doc.new_page()
-            where = fitz.Point(50, 50)
-            
-        q_text = f"Q{i+1}: {t.question.question_text if t.question else 'N/A'}"
-        # Use insert_textbox for automatic wrapping
-        rect_q = fitz.Rect(50, where.y, 550, where.y + 60)
-        page.insert_textbox(rect_q, q_text, fontsize=11, fontname="helv", align=0)
-        where.y += 40
+        # spacer
+        cursor_y += 10
         
-        answer = f"STUDENT: {t.student_answer}"
-        rect_a = fitz.Rect(50, where.y, 550, where.y + 100)
-        page.insert_textbox(rect_a, answer, fontsize=10, fontname="helv", align=0)
-        where.y += 60
+        # Question
+        q_label = f"Q{i+1}: "
+        q_text = t.question.question_text if t.question else 'N/A'
         
-        page.draw_line(fitz.Point(50, where.y), fitz.Point(550, where.y), color=(0.8, 0.8, 0.8), width=0.5)
-        where.y += 20
-
+        page, cursor_y = write_wrapped_text(doc, page, cursor_y, q_label + q_text, fontsize=11, bold=True)
+        cursor_y += 10
+        
+        # Answer
+        a_label = "STUDENT ANSWER: "
+        a_text = t.student_answer or "[No Answer]"
+        page, cursor_y = write_wrapped_text(doc, page, cursor_y, a_label + a_text, fontsize=10, color=(0.2, 0.2, 0.2))
+        
+        cursor_y += 10
+        page, cursor_y = check_page_break(doc, page, cursor_y, 20)
+        page.draw_line(fitz.Point(50, cursor_y), fitz.Point(550, cursor_y), color=(0.8, 0.8, 0.8), width=0.5)
+        cursor_y += 20
+        
     # Save to stream
     pdf_bytes = doc.tobytes()
     doc.close()
