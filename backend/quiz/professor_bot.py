@@ -54,7 +54,16 @@ class ProfessorBot:
         if course_id:
             feedback_examples = self._get_feedback_context(course_id)
 
-        # 3. Assessment Generation
+        # 3. Conceptual Gap Analysis (New)
+        conceptual_gap = None
+        if history_turns and len(history_turns) >= 2:
+            last_student_answer = history_turns[-1]['text']
+            # Simple heuristic: If the answer was short or vague, or if flagged as struggled
+            if student_struggled or len(last_student_answer.split()) < 5:
+                # We could use LLM here to find specific misconception, but for speed we'll prompt the generator directly
+                conceptual_gap = "Potential Misconception or Vague Understanding"
+
+        # 4. Assessment Generation
         return self._create_question_from_m_chunk(
             chunk, 
             author=author,
@@ -63,7 +72,8 @@ class ProfessorBot:
             history_turns=history_turns,
             feedback_examples=feedback_examples,
             progression_type=progression_type,
-            phase=phase
+            phase=phase,
+            conceptual_gap=conceptual_gap
         )
 
     def _get_feedback_context(self, course_id: int) -> str:
@@ -71,9 +81,10 @@ class ProfessorBot:
         from ..database.models.question import Question
         from ..database.models.hierarchy import Subsection
         
-        # Get 3 best and 3 worst examples for this course
-        liked = self.db.query(Question).join(Subsection).filter(Subsection.section_id != None).filter(Question.upvotes > 0).order_by(Question.upvotes.desc()).limit(3).all()
-        disliked = self.db.query(Question).join(Subsection).filter(Subsection.section_id != None).filter(Question.downvotes > 0).order_by(Question.downvotes.desc()).limit(3).all()
+        # Get 5 best and 5 worst examples for this course (increased from 3)
+        # Removed strict section_id filter to include all generated questions
+        liked = self.db.query(Question).join(Subsection).filter(Question.upvotes > 0).order_by(Question.id.desc()).limit(5).all()
+        disliked = self.db.query(Question).join(Subsection).filter(Question.downvotes > 0).order_by(Question.id.desc()).limit(5).all()
         
         context = ""
         if liked:
@@ -97,7 +108,7 @@ class ProfessorBot:
         relations = self.db.query(KnowledgeRelation).filter_by(source_id=chunk_id).limit(2).all()
         return [self.db.query(Chunk).get(rel.target_id) for rel in relations]
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", progression_type: str = "FUNDAMENTAL", phase: str = "PHASE 1"):
+    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", progression_type: str = "FUNDAMENTAL", phase: str = "PHASE 1", conceptual_gap: str = None):
         """Generates a question following structural assessment logic with high-fidelity system instruction compliance and teacher feedback adaptation."""
         
         graph_context = ""
@@ -123,6 +134,15 @@ class ProfessorBot:
 
         author_display = author if author and author.lower() != "unknown" else "the author"
         
+        gap_instruction = ""
+        if conceptual_gap or student_struggled:
+             gap_instruction = f"""
+        [CONCEPTUAL GAP DETECTED]
+        The student seems to have struggled or provided a vague answer recently.
+        YOUR TASK: Ask a follow-up question that explicitly probes this potential gap/misconception. 
+        Do NOT just move on. Drill down gently to clarify their understanding.
+        """
+
         user_prompt = f"""
         [SYSTEM ROLE]
         You are an elite academic examiner. You MUST strictly adhere to the STYLE GUIDELINE below.
@@ -139,6 +159,8 @@ class ProfessorBot:
         - PHASE 2 (Reflection): Probe deeper into the "Why" behind the author's logic and internal reasoning.
         - PHASE 3 (Critique & Beyond): Pivot to critical reflection. Ask where the logic fails or what is overlooked.
         STRICT RULE: You MUST tailor your question depth strictly to the goal of {phase}.
+        
+        {gap_instruction}
 
         [CONTEXTUAL CONSTRAINTS]
         {history_context}
@@ -168,7 +190,7 @@ class ProfessorBot:
 
         system_prompt = self.instructions if self.instructions else "You are an expert academic examiner."
 
-        print(f"DEBUG: Generating assessment question for Chunk ID: {chunk.id} (Struggle: {student_struggled}, Progression: {progression_type})")
+        print(f"DEBUG: Generating assessment question for Chunk ID: {chunk.id} (Struggle: {student_struggled}, Gap: {conceptual_gap}, Progression: {progression_type})")
         raw_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
         
         # Parse the structured response

@@ -1,18 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
-import { CheckCircle2, Timer, User, Send } from 'lucide-react';
+import {
+    Mic, MicOff, Send, Clock,
+    AlertCircle, CheckCircle2, ChevronRight,
+    Play, Pause, Volume2, Pencil, X,
+    User, Timer, Loader2
+} from 'lucide-react';
 import { useLocation, useParams } from 'react-router-dom';
-import client from '../api/client';
-import { useSpeechToText } from '../hooks/useSpeechToText';
-import { Mic, MicOff } from 'lucide-react';
+import client, { api } from '../api/client';
+import { useAudioRecorder } from '../hooks/useAudioRecorder';
 
 export const StudentQuiz: React.FC = () => {
     const { quizId } = useParams();
     const location = useLocation();
     const studentInfo = location.state as { name: string; enrollmentId: string } | null;
 
-    const [messages, setMessages] = useState<{ id: string; role: 'bot' | 'user'; text: string }[]>([]);
+    const [messages, setMessages] = useState<{ id: string; role: 'bot' | 'user'; text: string; questionId?: number }[]>([]);
     const [answer, setAnswer] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isFinished, setIsFinished] = useState(false);
@@ -20,21 +24,69 @@ export const StudentQuiz: React.FC = () => {
     const [seenIds, setSeenIds] = useState<number[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentQuestionId, setCurrentQuestionId] = useState<number | null>(null);
+
+    // Voice State
+    const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+    const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+
     const chatEndRef = React.useRef<HTMLDivElement>(null);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-    const initialAnswerRef = React.useRef('');
 
-    const { isListening, startListening, stopListening } = useSpeechToText({
-        onResult: (transcript) => {
-            const initial = initialAnswerRef.current;
-            const spacer = initial && !initial.endsWith(' ') ? ' ' : '';
-            setAnswer(initial + spacer + transcript);
+    // Audio Recorder Hook
+    const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+
+    const handleVoiceInput = async () => {
+        if (isRecording) {
+            // Stop Recording & Process
+            setIsProcessingAudio(true);
+            try {
+                const audioBlob = await stopRecording();
+                const response = await api.transcribeAudio(audioBlob);
+                const transcribedText = response.data.user_text;
+
+                if (transcribedText) {
+                    setAnswer(prev => (prev ? prev + " " + transcribedText : transcribedText));
+                }
+            } catch (err) {
+                console.error("Transcription failed", err);
+                alert("Could not process voice input. Please try again.");
+            } finally {
+                setIsProcessingAudio(false);
+            }
+        } else {
+            // Start Recording
+            await startRecording();
         }
-    });
+    };
 
-    const handleStartListening = () => {
-        initialAnswerRef.current = answer;
-        startListening();
+    const playQuestionAudio = async (text: string) => {
+        if (isPlayingAudio) {
+            audioRef.current?.pause();
+            setIsPlayingAudio(false);
+            return;
+        }
+
+        try {
+            const response = await api.synthesizeText(text);
+            const audioBlob = response.data;
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            if (audioRef.current) {
+                audioRef.current.pause();
+            }
+
+            const audio = new Audio(audioUrl);
+            audioRef.current = audio;
+
+            audio.onended = () => setIsPlayingAudio(false);
+
+            setIsPlayingAudio(true);
+            await audio.play();
+        } catch (err) {
+            console.error("TTS failed", err);
+            alert("Could not play audio.");
+        }
     };
 
     useEffect(() => {
@@ -46,7 +98,51 @@ export const StudentQuiz: React.FC = () => {
 
     // Timer & Metadata state
     const [timeLeft, setTimeLeft] = useState<number | null>(null);
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+    const [editText, setEditText] = useState("");
     const [totalQuestionsLimit, setTotalQuestionsLimit] = useState(5);
+
+    const handleEditClick = (msg: any) => {
+        setEditingMessageId(msg.id);
+        setEditText(msg.text);
+    };
+
+    const handleSaveEdit = async (msg: any) => {
+        if (!editText.trim()) return;
+
+        // Optimistic update
+        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, text: editText } : m));
+        setEditingMessageId(null);
+
+        try {
+            await client.put(`/student/quiz/${quizId}/response`, {
+                question_id: msg.questionId,
+                enrollment_id: studentInfo?.enrollmentId,
+                new_answer: editText
+            });
+        } catch (err) {
+            alert("Failed to save edit");
+        }
+    };
+
+    const fetchInitialData = async () => {
+        try {
+            const { data: meta } = await client.get(`/student/quiz/${quizId}/meta`, {
+                params: { enrollment_id: studentInfo?.enrollmentId }
+            });
+            if (meta.duration_minutes) {
+                setTimeLeft(meta.duration_minutes * 60);
+            }
+            if (meta.total_questions) {
+                setTotalQuestionsLimit(meta.total_questions);
+            }
+            // Fetch the first question
+            await fetchQuestion();
+        } catch (err) {
+            console.error("Failed to load quiz metadata", err);
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
         if (!studentInfo) {
@@ -77,20 +173,6 @@ export const StudentQuiz: React.FC = () => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, loading, isSubmitting]);
 
-    const fetchInitialData = async () => {
-        try {
-            // Fetch Meta
-            const metaRes = await client.get(`/student/quiz/${quizId}/meta`);
-            setTotalQuestionsLimit(metaRes.data.total_questions);
-            setTimeLeft(metaRes.data.duration_minutes * 60);
-
-            // Fetch First Question
-            fetchQuestion();
-        } catch (err) {
-            console.error("Failed to initialize quiz", err);
-            setIsFinished(true);
-        }
-    };
 
     const isFetchingRef = React.useRef(false);
 
@@ -98,6 +180,12 @@ export const StudentQuiz: React.FC = () => {
         if (isFetchingRef.current) return;
         isFetchingRef.current = true;
         setLoading(true);
+        // Stop any playing audio when fetching new question
+        if (audioRef.current) {
+            audioRef.current.pause();
+            setIsPlayingAudio(false);
+        }
+
         try {
             const { data } = await client.get(`/student/quiz/${quizId}/next-question`, {
                 params: {
@@ -118,7 +206,6 @@ export const StudentQuiz: React.FC = () => {
             }
         } catch (err: any) {
             console.error("Failed to fetch question", err);
-            // Only finish if it's a real 404/500, not just a race condition
             if (err.response?.status !== 429) {
                 setIsFinished(true);
             }
@@ -133,7 +220,12 @@ export const StudentQuiz: React.FC = () => {
 
         const userMsgText = answer;
         setAnswer("");
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: userMsgText }]);
+        setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            role: 'user',
+            text: userMsgText,
+            questionId: currentQuestionId
+        }]);
 
         setIsSubmitting(true);
         try {
@@ -144,8 +236,8 @@ export const StudentQuiz: React.FC = () => {
                 enrollment_id: studentInfo.enrollmentId
             });
 
-            if (currentQuestionIdx >= totalQuestionsLimit) {
-                setTimeout(() => setIsFinished(true), 1500); // Give them a moment to see their last answer
+            if (totalQuestionsLimit > 0 && currentQuestionIdx >= totalQuestionsLimit) {
+                setTimeout(() => setIsFinished(true), 1500);
             } else {
                 fetchQuestion();
             }
@@ -216,11 +308,45 @@ export const StudentQuiz: React.FC = () => {
                     <div className="flex-1 bg-panel border border-border rounded-[32px] overflow-hidden flex flex-col shadow-2xl min-h-0">
                         <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scrollbar-hide">
                             {messages.map((msg) => (
-                                <div key={msg.id} className={`max-w-[85%] rounded-[24px] p-4 text-sm leading-relaxed animate-in fade-in slide-in-from-bottom-2 duration-300 ${msg.role === 'bot'
+                                <div key={msg.id} className={`max-w-[85%] rounded-[24px] p-4 text-sm leading-relaxed transition-all shadow-sm ${msg.role === 'bot'
                                     ? 'self-start bg-white/[0.05] border border-white/10 text-gray-100 rounded-bl-none'
                                     : 'self-end bg-accent text-[#062e6f] font-medium rounded-br-none'
                                     }`}>
-                                    {msg.text}
+                                    {editingMessageId === msg.id ? (
+                                        <div className="flex gap-2 items-center">
+                                            <input
+                                                value={editText}
+                                                onChange={e => setEditText(e.target.value)}
+                                                className="bg-white/20 text-white px-2 py-1 rounded text-sm w-full outline-none"
+                                                autoFocus
+                                            />
+                                            <button onClick={() => handleSaveEdit(msg)} className="p-1 hover:text-white"><CheckCircle2 size={16} /></button>
+                                            <button onClick={() => setEditingMessageId(null)} className="p-1 hover:text-white"><X size={16} /></button>
+                                        </div>
+                                    ) : (
+                                        <div className="group relative">
+                                            {msg.text}
+                                            {msg.role === 'user' && (
+                                                <button
+                                                    onClick={() => handleEditClick(msg)}
+                                                    className="absolute -left-6 top-0 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity p-1"
+                                                    title="Edit response"
+                                                >
+                                                    <Pencil size={12} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                    {/* Play Button for Bot Messages */}
+                                    {msg.role === 'bot' && (
+                                        <button
+                                            onClick={() => playQuestionAudio(msg.text)}
+                                            className="absolute md:opacity-0 group-hover:opacity-100 right-2 top-2 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-gray-400 hover:text-white transition-all"
+                                            title="Read Aloud"
+                                        >
+                                            <Volume2 size={14} />
+                                        </button>
+                                    )}
                                 </div>
                             ))}
                             {(loading || isSubmitting) && (
@@ -245,9 +371,9 @@ export const StudentQuiz: React.FC = () => {
                                     ref={textareaRef}
                                     value={answer}
                                     onChange={e => setAnswer(e.target.value)}
-                                    placeholder="Type your answer here..."
-                                    disabled={loading || isSubmitting}
-                                    className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-hidden min-h-[52px] max-h-[200px] scrollbar-hide"
+                                    placeholder={isRecording ? "Listening..." : isProcessingAudio ? "Processing voice..." : "Type your answer here..."}
+                                    disabled={loading || isSubmitting || isRecording || isProcessingAudio}
+                                    className={`flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-hidden min-h-[52px] max-h-[200px] scrollbar-hide ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
                                     rows={1}
                                     onKeyDown={(e) => {
                                         if (e.key === 'Enter' && !e.shiftKey) {
@@ -257,20 +383,25 @@ export const StudentQuiz: React.FC = () => {
                                     }}
                                 />
                                 <div className="flex gap-2 mb-1">
+                                    {/* Microphone Button */}
                                     <button
                                         type="button"
-                                        onClick={isListening ? stopListening : handleStartListening}
-                                        className={`p-3 rounded-2xl transition-colors h-[44px] w-[44px] flex items-center justify-center ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
-                                        title={isListening ? 'Stop Listening' : 'Start Speech to Text'}
+                                        onClick={handleVoiceInput}
+                                        disabled={loading || isSubmitting || isProcessingAudio}
+                                        className={`p-3 rounded-2xl transition-all ${isRecording
+                                            ? 'bg-red-500 text-white animate-pulse'
+                                            : 'bg-white/[0.05] text-gray-400 hover:text-white hover:bg-white/10'
+                                            }`}
+                                        title={isRecording ? 'Stop Recording' : 'Start Voice Input'}
                                     >
-                                        {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                                        {isProcessingAudio ? <Loader2 size={20} /> : isRecording ? <MicOff size={20} /> : <Mic size={20} />}
                                     </button>
 
                                     <Button
                                         type="submit"
                                         variant="secondary"
                                         className="px-6 rounded-2xl h-[44px]"
-                                        disabled={loading || isSubmitting || !answer.trim()}
+                                        disabled={loading || isSubmitting || !answer.trim() || isRecording}
                                     >
                                         <Send size={18} />
                                     </Button>
@@ -278,7 +409,7 @@ export const StudentQuiz: React.FC = () => {
                             </form>
 
                             <p className="text-[10px] text-center text-gray-500 mt-2 uppercase tracking-widest font-bold">
-                                Press Enter to send • Shift + Enter for new line
+                                {isRecording ? "Listening... Click mic to stop" : "Press Enter to send • Shift + Enter for new line"}
                             </p>
                         </div>
                     </div>

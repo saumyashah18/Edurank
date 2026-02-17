@@ -7,7 +7,14 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement | HTMLTe
 }
 
 export const Input: React.FC<InputProps> = ({ label, multiline, info, className = '', ...props }) => {
-    const Component = multiline ? 'textarea' : 'input';
+    const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+    React.useEffect(() => {
+        if (multiline && textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+        }
+    }, [props.value, multiline]);
 
     return (
         <div className={`flex flex-col gap-2 ${className}`}>
@@ -19,10 +26,19 @@ export const Input: React.FC<InputProps> = ({ label, multiline, info, className 
                     </span>
                 )}
             </label>
-            <Component
-                className="bg-transparent border border-border rounded-lg p-3 text-gray-100 focus:outline-none focus:border-accent transition-colors"
-                {...props as any}
-            />
+            {multiline ? (
+                <textarea
+                    ref={textareaRef}
+                    className="bg-transparent border border-border rounded-lg p-3 text-gray-100 focus:outline-none focus:border-accent transition-colors resize-none overflow-y-auto scrollbar-thin min-h-[48px] max-h-[200px]"
+                    {...props as any}
+                    rows={1}
+                />
+            ) : (
+                <input
+                    className="bg-transparent border border-border rounded-lg p-3 text-gray-100 focus:outline-none focus:border-accent transition-colors"
+                    {...props as any}
+                />
+            )}
         </div>
     );
 };

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, ForeignKey, Text, Float
+from sqlalchemy import Column, String, Integer, ForeignKey, Text, Float, Boolean
 from sqlalchemy.orm import relationship
 from .base import BaseModel
 
@@ -13,6 +13,7 @@ class Quiz(BaseModel):
     password = Column(String)
     is_finalized = Column(Integer, default=0)
     instructions = Column(Text) 
+    allow_audio = Column(Boolean, default=True) # New field
     
     transcripts = relationship("Transcript", back_populates="quiz")
     course = relationship("Course", backref="quizzes")

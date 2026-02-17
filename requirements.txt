@@ -10,3 +10,6 @@ python-dotenv
 openai
 pymupdf
 psycopg2-binary
+openai-whisper
+gTTS
+pydub

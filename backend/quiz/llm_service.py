@@ -9,10 +9,13 @@ class LLMService:
     def __init__(self):
         self.google_api_key = os.getenv("GOOGLE_API_KEY")
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-        self.model_name = os.getenv("LLM_MODEL", "deepseek/deepseek-r1-0528:free")
+        self.hf_api_key = os.getenv("HUGGINGFACE_API_KEY")
+        self.model_name = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
         
         # Initialize Google if key is present and model is gemini
         self.use_google = False
+        self.use_hf = False
+        
         if self.google_api_key and "gemini" in self.model_name.lower():
             genai.configure(api_key=self.google_api_key)
             # Remove "google/" prefix for direct Google API calls if present
@@ -20,6 +23,11 @@ class LLMService:
             self.google_model = genai.GenerativeModel(clean_model_name)
             self.use_google = True
             print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
+        elif self.hf_api_key:
+            from huggingface_hub import InferenceClient
+            self.hf_client = InferenceClient(api_key=self.hf_api_key)
+            self.use_hf = True
+            print(f"[*] LLMService: Using Hugging Face Inference API for model {self.model_name}")
         else:
             # Fallback/Primary OpenRouter
             self.client = OpenAI(
@@ -29,7 +37,7 @@ class LLMService:
             print(f"[*] LLMService: Using OpenRouter API for model {self.model_name}")
 
     def generate_content(self, prompt: str, system_prompt: str = None) -> str:
-        """Generates text content using either Google directly or OpenRouter."""
+        """Generates text content using Google, Hugging Face, or OpenRouter."""
         try:
             if self.use_google:
                 full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
@@ -43,6 +51,29 @@ class LLMService:
                 except (AttributeError, ValueError) as e:
                     print(f"[*] Google AI Blocked/Empty Response: {e}")
                     return "ERROR: The AI was unable to generate a response for this topic."
+            elif self.use_hf:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+
+                response = ""
+                try:
+                    stream = self.hf_client.chat.completions.create(
+                        model=self.model_name,
+                        messages=messages,
+                        max_tokens=2000,
+                        stream=True
+                    )
+                    for chunk in stream:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            content = chunk.choices[0].delta.content
+                            if content:
+                                response += content
+                    return response
+                except Exception as e:
+                    print(f"HF Error details: {e}")
+                    return f"ERROR: Hugging Face generation failed: {e}"
             else:
                 messages = []
                 if system_prompt:

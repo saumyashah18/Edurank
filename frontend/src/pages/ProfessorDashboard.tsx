@@ -1,5 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { RefreshCw, Copy, ThumbsUp, ThumbsDown, FileText, Lock, Globe, Check } from 'lucide-react';
+import {
+    Upload, FileText, CheckCircle2, AlertCircle,
+    RefreshCw, Play, Save, Lock, GripVertical,
+    ThumbsUp, ThumbsDown, Copy, Mic, MicOff, Infinity, Pencil, X,
+    Check, Globe
+} from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Layout } from '../components/Layout';
@@ -7,7 +12,6 @@ import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { useSpeechToText } from '../hooks/useSpeechToText';
-import { Mic, MicOff } from 'lucide-react';
 
 interface FileUpload {
     name: string;
@@ -29,7 +33,25 @@ export const ProfessorDashboard: React.FC = () => {
     const [instructions, setInstructions] = useState('');
     const [duration, setDuration] = useState(60);
     const [marks] = useState(100);
+    const [questionLimit, setQuestionLimit] = useState<'specific' | 'infinite'>('specific');
+    const [questionCount, setQuestionCount] = useState(10);
     const { user } = useAuth();
+    const [allowAudio, setAllowAudio] = useState(true);
+
+    // Editing State
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+    const [editText, setEditText] = useState("");
+
+    const handleEditClick = (msg: ChatMessage) => {
+        setEditingMessageId(msg.id);
+        setEditText(msg.text);
+    };
+
+    const handleSaveEdit = (msg: ChatMessage) => {
+        if (!editText.trim()) return;
+        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, text: editText } : m));
+        setEditingMessageId(null);
+    };
 
     const [files, setFiles] = useState<FileUpload[]>([]);
     const [messages, setMessages] = useState<ChatMessage[]>([
@@ -114,7 +136,7 @@ export const ProfessorDashboard: React.FC = () => {
     };
 
     const handleGenerate = async () => {
-        if (!examName) return alert("Please give your assessment a name.");
+        if (!examName || !instructions) return alert("Please fill all fields");
 
         setIsGenerating(true);
         try {
@@ -125,7 +147,8 @@ export const ProfessorDashboard: React.FC = () => {
                     duration,
                     total_marks: marks,
                     instructions,
-                    total_questions: 999 // Large number for chat-based sessions
+                    total_questions: questionLimit === 'infinite' ? -1 : questionCount,
+                    allow_audio: allowAudio
                 }
             });
             setCurrentQuizId(res.data.quiz_id);
@@ -268,6 +291,52 @@ export const ProfessorDashboard: React.FC = () => {
                 </div>
 
                 <div className="flex flex-col gap-2">
+                    <label className="text-sm font-medium text-gray-200">Question Limit</label>
+                    <div className="flex gap-2 p-1 bg-white/[0.05] rounded-xl border border-white/10">
+                        <button
+                            onClick={() => setQuestionLimit('specific')}
+                            className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 ${questionLimit === 'specific' ? 'bg-accent text-white shadow-lg' : 'text-gray-400 hover:text-gray-200'
+                                }`}
+                        >
+                            Specific
+                        </button>
+                        <button
+                            onClick={() => setQuestionLimit('infinite')}
+                            className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 ${questionLimit === 'infinite' ? 'bg-accent text-white shadow-lg' : 'text-gray-400 hover:text-gray-200'
+                                }`}
+                        >
+                            <Infinity size={14} /> Infinite
+                        </button>
+                    </div>
+                </div>
+
+                {questionLimit === 'specific' && (
+                    <Input
+                        label="Number of Questions"
+                        type="number"
+                        value={questionCount}
+                        onChange={e => setQuestionCount(parseInt(e.target.value))}
+                        placeholder="e.g. 10"
+                    />
+                )}
+
+                <div className="flex items-center justify-between p-3 border border-border rounded-lg bg-white/5">
+                    <div className="flex flex-col gap-1">
+                        <label className="text-sm font-medium text-gray-200">Allow Audio Response</label>
+                        <span className="text-xs text-gray-400">Students can use microphone to answer</span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="sr-only peer"
+                            checked={allowAudio}
+                            onChange={e => setAllowAudio(e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent"></div>
+                    </label>
+                </div>
+
+                <div className="flex flex-col gap-2">
                     <label className="text-sm font-medium text-gray-200">Knowledge</label>
                     {files.filter(f => f.status === 'ready').length === 0 && (
                         <div
@@ -325,8 +394,32 @@ export const ProfessorDashboard: React.FC = () => {
                                 ? 'self-start bg-white/[0.05] border border-white/10 text-gray-100 rounded-bl-none'
                                 : 'self-end bg-accent text-[#062e6f] font-medium rounded-br-none'
                                 }`}>
-                                {msg.context && <small className="block opacity-60 mb-2 uppercase tracking-wider font-bold text-[10px]">{msg.context}</small>}
-                                {msg.text}
+                                {editingMessageId === msg.id ? (
+                                    <div className="flex gap-2 items-center">
+                                        <input
+                                            value={editText}
+                                            onChange={e => setEditText(e.target.value)}
+                                            className="bg-white/20 text-white px-2 py-1 rounded text-sm w-full outline-none"
+                                            autoFocus
+                                        />
+                                        <button onClick={() => handleSaveEdit(msg)} className="p-1 hover:text-white"><CheckCircle2 size={16} /></button>
+                                        <button onClick={() => setEditingMessageId(null)} className="p-1 hover:text-white"><X size={16} /></button>
+                                    </div>
+                                ) : (
+                                    <div className="group relative">
+                                        {msg.context && <small className="block opacity-60 mb-2 uppercase tracking-wider font-bold text-[10px]">{msg.context}</small>}
+                                        {msg.text}
+                                        {msg.role === 'user' && (
+                                            <button
+                                                onClick={() => handleEditClick(msg)}
+                                                className="absolute -left-6 top-0 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity p-1"
+                                                title="Edit response"
+                                            >
+                                                <Pencil size={12} />
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
 
                                 {msg.role === 'bot' && msg.questionId && (
                                     <div className="flex gap-4 mt-4 pt-4 border-t border-white/5">
@@ -402,7 +495,6 @@ export const ProfessorDashboard: React.FC = () => {
                     </div>
                 </div>
             </section>
-//simulation
             {/* Finalize Modal */}
             {isFinalizing && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 z-50">

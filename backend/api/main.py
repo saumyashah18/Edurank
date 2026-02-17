@@ -18,6 +18,9 @@ from ..quiz.quiz_manager import QuizManager
 from ..database.models.question import Question, QuestionStatus
 from ..database.models.hierarchy import Chapter, Section, Subsection, RawMaterial
 from ..database.models.transcript import Transcript, Quiz
+from ..voice.service import voice_service
+from ..quiz.llm_service import llm
+import base64
 
 
 app = FastAPI(title="Dialogue box AI System")
@@ -294,7 +297,7 @@ def rank_question(question_id: int, interaction: str, db: Session = Depends(get_
     return {"status": "Ranked", "upvotes": question.upvotes, "downvotes": question.downvotes}
 
 @app.post("/professor/quiz/create")
-def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: str = None, db: Session = Depends(get_db)):
+def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: str = None, allow_audio: bool = True, db: Session = Depends(get_db)):
     """Saves the exam configuration including system instructions."""
     quiz = Quiz(
         course_id=course_id, 
@@ -302,7 +305,8 @@ def create_exam_config(course_id: int, title: str, duration: int, total_marks: i
         duration_minutes=duration, 
         total_marks=total_marks,
         total_questions=total_questions,
-        instructions=instructions
+        instructions=instructions,
+        allow_audio=allow_audio
     )
     db.add(quiz)
     db.commit()
@@ -404,7 +408,8 @@ def get_quiz_meta(quiz_id: int, db: Session = Depends(get_db)):
     return {
         "title": quiz.title,
         "duration_minutes": quiz.duration_minutes,
-        "total_questions": quiz.total_questions
+        "total_questions": quiz.total_questions,
+        "allow_audio": quiz.allow_audio
     }
 
 
@@ -422,6 +427,28 @@ def start_quiz(quiz_id: int, data: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=401, detail="Invalid access password")
 
     return {"quiz_id": quiz_id, "status": "authorized"}
+
+@app.put("/student/quiz/{quiz_id}/response")
+def update_student_response(
+    quiz_id: int, 
+    data: dict, 
+    db: Session = Depends(get_db)
+):
+    """Updates a student's previous response WITHOUT triggering AI generation."""
+    from ..database.models.transcript import Transcript
+    
+    transcript = db.query(Transcript).filter_by(
+        quiz_id=quiz_id,
+        question_id=data.get('question_id'),
+        enrollment_id=data.get('enrollment_id')
+    ).first()
+    
+    if not transcript:
+        raise HTTPException(status_code=404, detail="Response not found")
+        
+    transcript.student_answer = data.get('new_answer')
+    db.commit()
+    return {"status": "Updated", "message": "Response updated successfully"}
 
 @app.post("/student/quiz/{quiz_id}/submit")
 def submit_answer(
@@ -464,11 +491,16 @@ def get_student_next_question(
     # We count transcripts as finished interactions
     answered_count = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).count()
     
-    # 7TH TURN TERMINATION (STRICT)
-    if answered_count >= 6:
+    # 7TH TURN TERMINATION (STRICT) -> Now Configurable
+    # If total_questions is set (e.g. 5, 10, etc.), enforce it.
+    # If total_questions is 0 or negative, it means "Infinite" -> No termination.
+    
+    limit = quiz.total_questions if quiz.total_questions and quiz.total_questions > 0 else -1
+    
+    if limit > 0 and answered_count >= limit:
         return {
             "id": 999999, # Dummy ID for termination
-            "text": "thank you for the user test assessment, you may now click to Finish assessment",
+            "text": "Assessment Concluded. Thank you for completing the questions. Please verify your answers and click 'Finish Assessment' to submit.",
             "answer": "HIDDEN",
             "context": "Complete",
             "reset": True # Frontend knows to finish
@@ -774,3 +806,73 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=transcript_{base_t.enrollment_id}.pdf"}
     )
+
+# --- Voice Chat Endpoints ---
+
+@app.post("/api/voice-chat/general")
+async def voice_chat_general(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    General conversational voice chat.
+    Pipeline: Speech -> STT -> Math Norm -> LLM -> TTS -> Audio
+    """
+    temp_audio_path = f"temp_voice_{file.filename}"
+    try:
+        # 1. Save uploaded audio
+        with open(temp_audio_path, "wb") as f:
+            f.write(await file.read())
+        
+        # 2. Transcribe (includes Math Normalization)
+        user_text = voice_service.transcribe(temp_audio_path)
+        if not user_text:
+            return JSONResponse(status_code=400, content={"message": "Could not transcribe audio"})
+            
+        print(f"User said: {user_text}")
+        
+        # 3. Get LLM Response
+        # For general chat, we can use a simple prompt or context
+        system_prompt = "You are a helpful AI tutor. Keep responses concise and conversational."
+        # Use existing LLM service
+        ai_response_text = llm.generate_content(user_text, system_prompt=system_prompt)
+        
+        # Clean response if it has errors
+        if ai_response_text.startswith("ERROR"):
+            ai_response_text = "I'm having trouble connecting to my brain right now. Please try again."
+            
+        print(f"AI response: {ai_response_text}")
+        
+        # 4. Synthesize Speech
+        output_audio_path = voice_service.synthesize(ai_response_text)
+        
+        if not output_audio_path or not os.path.exists(output_audio_path):
+             return JSONResponse(status_code=500, content={"message": "Failed to generate speech"})
+             
+        # 5. Return JSON with text and audio (base64)
+        with open(output_audio_path, "rb") as audio_file:
+            audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
+            
+        # Clean up
+        try:
+            os.remove(output_audio_path)
+        except:
+            pass
+            
+        return {
+            "user_text": user_text,
+            "ai_text": ai_response_text,
+            "audio_base64": audio_base64,
+            "format": "mp3"
+        }
+        
+    except Exception as e:
+        print(f"Error in voice chat: {e}")
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    finally:
+        # Clean up input file
+        if os.path.exists(temp_audio_path):
+            try:
+                os.remove(temp_audio_path)
+            except:
+                pass

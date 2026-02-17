@@ -1,27 +1,46 @@
-# Request to University IT Department
+# Follow-up Questions for IT Department
 
-Subject: SSH Access Issue for app-admin@10.20.10.130
+Subject: Additional Requirements for Application Deployment
 
 Hello,
 
-I'm trying to connect to the server at 10.20.10.130 using the credentials provided:
-- Username: app-admin
-- IP: 10.20.10.130
+Thank you for setting up the Python 3 environment! I have a few follow-up questions to ensure successful deployment:
 
-However, I'm getting "Permission denied" when entering the password.
+## Backend Requirements (Python - Already Covered ✓)
+- Python 3 environment is available ✓
 
-Could you please help with one of the following:
+## Database Requirements
+1. Is PostgreSQL available on the datacenter?
+   - If yes: Can I get database credentials (host, port, database name, username, password)?
+   - If no: I can use an external cloud database service (free tier available)
 
-1. Verify the password is correct and the account is activated
-2. Reset the password if needed
-3. Alternatively, set up SSH key-based authentication (more secure)
+## Frontend Requirements
+My application has a React frontend. I have two options:
 
-For SSH key authentication, I can provide my public key:
-[You would generate this with: ssh-keygen -t ed25519]
+Option A (Preferred):
+- Is Node.js/npm available on the server?
+- If yes, I can build the frontend there
 
-Additional questions:
-- Do I need to be on campus network or VPN?
-- Are there any IP restrictions?
-- Is password authentication enabled on this server?
+Option B (Alternative):
+- I can build the frontend on my local machine
+- Then upload only the static files (HTML/CSS/JS)
+- These can be served with Python's built-in HTTP server or nginx
+
+## Network/Port Requirements
+- Backend needs to run on port 8000
+- Frontend needs to run on port 3000 (or any available port)
+- Are these ports available and accessible?
+
+## Process Management
+- Can I use screen/tmux to keep processes running?
+- Or is there a preferred method (systemd, supervisor, pm2)?
+
+## File Transfer
+- What's the best way to upload my code?
+  - Git clone from GitHub/GitLab?
+  - SCP/SFTP file transfer?
+  - Other method?
+
+Please let me know what's available so I can proceed with deployment.
 
 Thank you!
