@@ -12,8 +12,7 @@ SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./edurank.db")
 _engine_kwargs = {}
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
-elif "supabase.co" in SQLALCHEMY_DATABASE_URL:
-    _engine_kwargs["connect_args"] = {"sslmode": "require"}
+elif SQLALCHEMY_DATABASE_URL.startswith("postgresql"):
     _engine_kwargs["pool_pre_ping"] = True  # reconnect on stale connections
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, **_engine_kwargs)
