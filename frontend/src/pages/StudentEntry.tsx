@@ -44,7 +44,7 @@ export const StudentEntry: React.FC = () => {
                     <div className="w-20 h-20 flex items-center justify-center">
                         <img
                             src="/logo.png"
-                            alt="AU Quiz Bot Logo"
+                            alt="AIssociate Logo"
                             className="w-full h-full object-contain mix-blend-screen"
                         />
                     </div>

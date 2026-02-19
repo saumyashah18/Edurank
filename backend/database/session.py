@@ -7,7 +7,7 @@ from .models.base import Base
 load_dotenv()
 
 # Use SQLite for local development by default, or Postgres if specified
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./edurank.db")
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./aissociate.db")
 
 _engine_kwargs = {}
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):

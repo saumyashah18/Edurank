@@ -3,7 +3,7 @@
 # Deployment Strategy for Python-Only Environment
 # Use this if the server only has Python 3 (no Node.js)
 
-echo "🚀 Deploying Edurank to Python-Only Environment"
+echo "🚀 Deploying AIssociate to Python-Only Environment"
 echo "================================================"
 echo ""
 
@@ -53,7 +53,7 @@ cat > deploy_package/setup_on_server.sh << 'EOF'
 #!/bin/bash
 # Run this script on the server after uploading
 
-echo "Setting up Edurank on server..."
+echo "Setting up AIssociate on server..."
 
 # Create virtual environment
 python3 -m venv venv
@@ -74,15 +74,15 @@ chmod +x deploy_package/setup_on_server.sh
 
 # Create tarball
 echo "Step 3: Creating tarball..."
-tar -czf edurank_deploy.tar.gz deploy_package/
+tar -czf aissociate_deploy.tar.gz deploy_package/
 
 echo ""
-echo "✅ Deployment package created: edurank_deploy.tar.gz"
+echo "✅ Deployment package created: aissociate_deploy.tar.gz"
 echo ""
 echo "Next steps:"
-echo "1. Upload to server: scp edurank_deploy.tar.gz app-admin@10.20.10.130:~/"
+echo "1. Upload to server: scp aissociate_deploy.tar.gz app-admin@10.20.10.130:~/"
 echo "2. SSH to server: ssh app-admin@10.20.10.130"
-echo "3. Extract: tar -xzf edurank_deploy.tar.gz"
+echo "3. Extract: tar -xzf aissociate_deploy.tar.gz"
 echo "4. Run setup: cd deploy_package && ./setup_on_server.sh"
 echo "5. Update .env with production database credentials"
 echo "6. Start services: ./start_backend.sh and ./start_frontend.sh"
