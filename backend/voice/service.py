@@ -1,7 +1,6 @@
 import os
 import whisper
 from gtts import gTTS
-from pydub import AudioSegment
 import tempfile
 from ..utils.math_normalizer import normalize_math_speech
 
