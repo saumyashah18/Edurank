@@ -9,7 +9,8 @@ class LLMService:
     def __init__(self):
         self.google_api_key = os.getenv("GOOGLE_API_KEY")
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-        self.hf_api_key = os.getenv("HUGGINGFACE_API_KEY")
+        # Unify HF Token usage: Prefer HF_TOKEN (standard), fallback to HUGGINGFACE_API_KEY
+        self.hf_api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
         self.model_name = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
         
         # Initialize Google if key is present and model is gemini
@@ -25,7 +26,7 @@ class LLMService:
             print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
         elif self.hf_api_key:
             from huggingface_hub import InferenceClient
-            self.hf_client = InferenceClient(api_key=self.hf_api_key)
+            self.hf_client = InferenceClient(token=self.hf_api_key)
             self.use_hf = True
             print(f"[*] LLMService: Using Hugging Face Inference API for model {self.model_name}")
         else:
