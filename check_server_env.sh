@@ -3,7 +3,7 @@
 # Server Environment Check Script
 # Run this script AFTER connecting to the server via SSH
 
-echo "🔍 Edurank Server Environment Check"
+echo "🔍 AIssociate Server Environment Check"
 echo "====================================="
 echo ""
 

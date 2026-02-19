@@ -1,6 +1,6 @@
 import os
 from openai import OpenAI
-import google.generativeai as genai
+# import google.generativeai as genai # Deprecated/Removed
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,6 +9,7 @@ class LLMService:
     def __init__(self):
         self.google_api_key = os.getenv("GOOGLE_API_KEY")
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+        self.groq_api_key = os.getenv("GROQ_API_KEY")
         # Unify HF Token usage: Prefer HF_TOKEN (standard), fallback to HUGGINGFACE_API_KEY
         self.hf_api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
         self.model_name = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
@@ -18,12 +19,22 @@ class LLMService:
         self.use_hf = False
         
         if self.google_api_key and "gemini" in self.model_name.lower():
-            genai.configure(api_key=self.google_api_key)
-            # Remove "google/" prefix for direct Google API calls if present
-            clean_model_name = self.model_name.replace("google/", "")
-            self.google_model = genai.GenerativeModel(clean_model_name)
-            self.use_google = True
-            print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.google_api_key)
+                # Remove "google/" prefix for direct Google API calls if present
+                clean_model_name = self.model_name.replace("google/", "")
+                self.google_model = genai.GenerativeModel(clean_model_name)
+                self.use_google = True
+                print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
+            except ImportError:
+                print("[!] Google Generative AI package not found. Skipping Google initialization.")
+        elif self.groq_api_key and ("llama" in self.model_name.lower() or "mixtral" in self.model_name.lower() or "gemma" in self.model_name.lower() or "versatile" in self.model_name.lower()):
+            self.client = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=self.groq_api_key,
+            )
+            print(f"[*] LLMService: Using Groq API for model {self.model_name}")
         elif self.hf_api_key:
             from huggingface_hub import InferenceClient
             self.hf_client = InferenceClient(token=self.hf_api_key)

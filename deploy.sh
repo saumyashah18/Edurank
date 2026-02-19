@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Edurank Deployment Script
-# This script helps deploy/redeploy the Edurank application on a server
+# AIssociate Deployment Script
+# This script helps deploy/redeploy the AIssociate application on a server
 
 set -e  # Exit on any error
 
-echo "🚀 Edurank Deployment Script"
+echo "🚀 AIssociate Deployment Script"
 echo "=============================="
 echo ""
 
@@ -74,7 +74,7 @@ case $choice in
             echo "Example:"
             echo "OPENROUTER_API_KEY=your_key_here"
             echo "LLM_MODEL=anthropic/claude-opus-4.6"
-            echo "DATABASE_URL=postgresql://username:password@localhost:5432/edurank"
+            echo "DATABASE_URL=postgresql://username:password@localhost:5432/aissociate"
             echo "HF_TOKEN=your_token_here"
             echo ""
             read -p "Press Enter after creating .env file..."
@@ -84,7 +84,7 @@ case $choice in
         print_info "Checking PostgreSQL connection..."
         if command -v psql &> /dev/null; then
             print_info "PostgreSQL client found. Make sure your database is set up!"
-            echo "You can test connection with: psql -U your_username -d edurank"
+            echo "You can test connection with: psql -U your_username -d aissociate"
         else
             print_warning "PostgreSQL client (psql) not found on this system"
             print_warning "Make sure you have access to a PostgreSQL database"

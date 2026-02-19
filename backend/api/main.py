@@ -23,7 +23,7 @@ from ..quiz.llm_service import llm
 import base64
 
 
-app = FastAPI(title="Dialogue box AI System")
+app = FastAPI(title="AIssociate AI System")
 
 # Enable CORS with explicit null support for local files
 app.add_middleware(
@@ -665,7 +665,7 @@ def export_transcript(transcript_id: int, db: Session = Depends(get_db)):
         Transcript.enrollment_id == base_t.enrollment_id
     ).order_by(Transcript.created_at).all()
     
-    content = f"--- EDU RANK ASSESSMENT TRANSCRIPT ---\n"
+    content = f"--- AIssociate ASSESSMENT TRANSCRIPT ---\n"
     content += f"STUDENT: {base_t.student_name}\n"
     content += f"ENROLLMENT: {base_t.enrollment_id}\n"
     content += f"QUIZ ID: {base_t.quiz_id}\n"
@@ -755,7 +755,7 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
         return page, y
 
     # Header
-    page.insert_text((50, cursor_y), "EDU RANK ASSESSMENT TRANSCRIPT", fontsize=16, color=(0, 0, 1))
+    page.insert_text((50, cursor_y), "AIssociate ASSESSMENT TRANSCRIPT", fontsize=16, color=(0, 0, 1))
     cursor_y += 30
     
     metadata = [

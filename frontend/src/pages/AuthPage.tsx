@@ -59,11 +59,11 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
                     <div className="w-20 h-20 flex items-center justify-center">
                         <img
                             src="/logo.png"
-                            alt="AU Quiz Bot Logo"
+                            alt="AIssociate Logo"
                             className="w-full h-full object-contain mix-blend-screen"
                         />
                     </div>
-                    <h1 className="text-2xl font-bold text-gray-100">AU Quiz Bot</h1>
+                    <h1 className="text-2xl font-bold text-gray-100">AIssociate</h1>
                     <p className="text-gray-400 text-sm">Professor {mode === 'login' ? 'Sign In' : 'Registration'}</p>
                 </div>
 
