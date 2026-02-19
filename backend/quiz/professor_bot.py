@@ -41,39 +41,21 @@ class ProfessorBot:
         return list(set(filters)) if filters else None
 
 
-    def generate_single_question(self, chunk: Chunk, course_id: int = None, author: str = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, progression_type: str = "FUNDAMENTAL", phase: str = "PHASE 1"):
-        """Generates ONE assessment question with history awareness and feedback-driven learning."""
+    def generate_single_question(self, chunk: Chunk, course_id: int = None, author: str = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None):
+        """Generates ONE assessment question. System instructions drive all behavior."""
         if not chunk:
             return None
 
-        # 1. Graph-Aware Retrieval
-        related_chunks = self._fetch_graph_relations(chunk.id)
-
-        # 2. Feedback-Driven Context (Learning from Likes/Dislikes)
+        # Feedback context from likes/dislikes (optional enrichment)
         feedback_examples = ""
         if course_id:
             feedback_examples = self._get_feedback_context(course_id)
 
-        # 3. Conceptual Gap Analysis (New)
-        conceptual_gap = None
-        if history_turns and len(history_turns) >= 2:
-            last_student_answer = history_turns[-1]['text']
-            # Simple heuristic: If the answer was short or vague, or if flagged as struggled
-            if student_struggled or len(last_student_answer.split()) < 5:
-                # We could use LLM here to find specific misconception, but for speed we'll prompt the generator directly
-                conceptual_gap = "Potential Misconception or Vague Understanding"
-
-        # 4. Assessment Generation
         return self._create_question_from_m_chunk(
             chunk, 
             author=author,
-            related_chunks=related_chunks, 
-            student_struggled=student_struggled, 
             history_turns=history_turns,
-            feedback_examples=feedback_examples,
-            progression_type=progression_type,
-            phase=phase,
-            conceptual_gap=conceptual_gap
+            feedback_examples=feedback_examples
         )
 
     def _get_feedback_context(self, course_id: int) -> str:
@@ -81,25 +63,20 @@ class ProfessorBot:
         from ..database.models.question import Question
         from ..database.models.hierarchy import Subsection
         
-        # Get 5 best and 5 worst examples for this course (increased from 3)
-        # Removed strict section_id filter to include all generated questions
         liked = self.db.query(Question).join(Subsection).filter(Question.upvotes > 0).order_by(Question.id.desc()).limit(5).all()
         disliked = self.db.query(Question).join(Subsection).filter(Question.downvotes > 0).order_by(Question.id.desc()).limit(5).all()
         
         context = ""
         if liked:
-            context += "\n### TEACHER'S PREFERRED STYLE (LIKED EXAMPLES):\n"
+            context += "\nTeacher liked these question styles:\n"
             for q in liked:
-                context += f"- LIKED: \"{q.question_text}\"\n"
+                context += f"- \"{q.question_text}\"\n"
         
         if disliked:
-            context += "\n### STYLES TO AVOID (DISLIKED EXAMPLES):\n"
+            context += "\nTeacher disliked these question styles (avoid):\n"
             for q in disliked:
-                context += f"- DISLIKED: \"{q.question_text}\"\n"
+                context += f"- \"{q.question_text}\"\n"
                 
-        if context:
-            context += "\nINSTRUCTION: Analyze the teacher's preferences above. Mimic the depth, tone, and complexity of 'LIKED' examples and strictly avoid the style/patterns seen in 'DISLIKED' examples."
-            
         return context
 
     def _fetch_graph_relations(self, chunk_id: int):
@@ -108,93 +85,42 @@ class ProfessorBot:
         relations = self.db.query(KnowledgeRelation).filter_by(source_id=chunk_id).limit(2).all()
         return [self.db.query(Chunk).get(rel.target_id) for rel in relations]
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, related_chunks: List[Chunk] = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", progression_type: str = "FUNDAMENTAL", phase: str = "PHASE 1", conceptual_gap: str = None):
-        """Generates a question following structural assessment logic with high-fidelity system instruction compliance and teacher feedback adaptation."""
+    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, history_turns: List[Dict[str, str]] = None, feedback_examples: str = ""):
+        """
+        Generates a question. The professor's system instructions are the SOLE system prompt.
+        No hardcoded phases, greetings, or topic rotation logic — all of that is in the instructions.
+        """
         
-        graph_context = ""
-        if related_chunks:
-            graph_context = "\n### RELATED COMPARATIVE MATERIALS:\n"
-            for rc in related_chunks:
-                graph_context += f"- {rc.content[:500]}...\n"
-
-        # 1. Contextual History & Greeting Suppression
-        history_context = ""
-        greeting_constraint = "STRICT RULE: Do NOT start your response with 'Good morning', 'Hello', 'Class', 'Alright', or any introductory greeting. Jump directly into the conversation or the question."
-        
-        if history_turns:
-            history_context = "### CONVERSATION HISTORY (Most Recent Last):\n"
-            for turn in history_turns:
-                history_context += f"{turn['role'].upper()}: {turn['text']}\n"
-            history_context += f"\n{greeting_constraint} Acknowledge the student's previous point briefly, then move to the next concept."
-        else:
-            # First question of the session
-            history_context = "### START OF SESSION\n"
-            # We allow ONE brief greeting only if it's the very first message
-            greeting_constraint = "You may provide ONE brief welcoming sentence (max 10 words) as this is the start of the session. Then proceed to the question."
-
         author_display = author if author and author.lower() != "unknown" else "the author"
-        
-        gap_instruction = ""
-        if conceptual_gap or student_struggled:
-             gap_instruction = f"""
-        [CONCEPTUAL GAP DETECTED]
-        The student seems to have struggled or provided a vague answer recently.
-        YOUR TASK: Ask a follow-up question that explicitly probes this potential gap/misconception. 
-        Do NOT just move on. Drill down gently to clarify their understanding.
-        """
 
-        user_prompt = f"""
-        [SYSTEM ROLE]
-        You are an elite academic examiner. You MUST strictly adhere to the STYLE GUIDELINE below.
-        
-        [STYLE GUIDELINE]
-        {self.instructions if self.instructions else "Standard academic tone, professional and concise."}
-        {feedback_examples}
+        # --- SYSTEM PROMPT: Professor's instructions ONLY, unmodified ---
+        system_prompt = self.instructions if self.instructions else "You are an expert academic examiner. Ask one sharp question at a time about the provided reading material."
 
-        [PROGRESSION MODE]
-        {progression_type}: {"Provide a brief conversational setup + sharp question mentioning " + author_display if progression_type == "FUNDAMENTAL" else "Connect to previous point + probe specific nuance."}
+        # --- USER PROMPT: Conversation history + source material + output format ---
+        # Build conversation history
+        history_block = ""
+        if history_turns:
+            history_block = "CONVERSATION SO FAR:\n"
+            for turn in history_turns:
+                role_label = "EXAMINER" if turn['role'] == 'bot' else "STUDENT"
+                history_block += f"{role_label}: {turn['text']}\n"
+            history_block += "\n"
 
-        [CURRENT PHASE: {phase}]
-        - PHASE 1 (Basic Comprehension): Focus on central themes or core concepts from the text.
-        - PHASE 2 (Reflection): Probe deeper into the "Why" behind the author's logic and internal reasoning.
-        - PHASE 3 (Critique & Beyond): Pivot to critical reflection. Ask where the logic fails or what is overlooked.
-        STRICT RULE: You MUST tailor your question depth strictly to the goal of {phase}.
-        
-        {gap_instruction}
+        user_prompt = f"""{history_block}{feedback_examples}
+READING AUTHOR: {author_display}
+TOPIC: {chunk.subsection.section.title} > {chunk.subsection.title}
+SOURCE MATERIAL:
+{chunk.content}
 
-        [CONTEXTUAL CONSTRAINTS]
-        {history_context}
-        {greeting_constraint}
+Respond in this format:
+Question: [Your question]
+Ideal Answer: [Brief expected answer]"""
 
-        [PRIMARY DIRECTIVE]
-        You MUST strictly follow these instructions: {self.instructions if self.instructions else "None."}
-        
-        [SOURCE MATERIAL]
-        READING AUTHOR: {author_display}
-        TOPIC: {chunk.subsection.section.title} > {chunk.subsection.title}
-        CONTENT: {chunk.content}
-        {graph_context}
-
-        [TASKS]
-        1. {"Ask a clarifying question about a simpler part" if student_struggled else "Ask exactly ONE high-level question."}
-        2. NO NUMERICAL REFERENCES (page X, etc.).
-        3. NO MULTIPLE QUESTIONS.
-        
-        ### OUTPUT FORMAT (MANDATORY):
-        Question: [Your response text]
-        Ideal Answer: [One-sentence summary]
-
-        ### FINAL CHECK: 
-        Did you follow the instructions? -> {self.instructions if self.instructions else "N/A"}
-        """
-
-        system_prompt = self.instructions if self.instructions else "You are an expert academic examiner."
-
-        print(f"DEBUG: Generating assessment question for Chunk ID: {chunk.id} (Struggle: {student_struggled}, Gap: {conceptual_gap}, Progression: {progression_type})")
+        print(f"DEBUG: Generating question for Chunk ID: {chunk.id}, Author: {author_display}, History turns: {len(history_turns) if history_turns else 0}")
         raw_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
         
         # Parse the structured response
-        q_text, a_text = self._parse_ai_response(raw_text)
+        q_text, a_text = self._parse_ai_response(raw_text, chunk)
 
         question = Question(
             question_text=q_text,
@@ -208,37 +134,35 @@ class ProfessorBot:
         return question
 
 
-    def _parse_ai_response(self, text: str):
-        """Robust parser for AI-generated assessment content, handling DeepSeek R1 reasoning tags and markdown."""
+    def _parse_ai_response(self, text: str, chunk: Chunk = None):
+        """Robust parser for AI-generated assessment content."""
         import re
         
         print(f"DEBUG: RAW AI Response:\n{text}\n{'='*30}")
         if not text or not text.strip():
-            return "Could you tell me more about your thoughts on this reading?", "PENDING_STUDENT_RESPONSE"
+            # Fallback uses the actual chunk content instead of a vague question
+            author = self.planner.get_chunk_author(chunk) if chunk else "the author"
+            return f"What is the central argument {author} makes in this reading?", "CONSULT_SOURCE_MATERIAL"
             
         if text == "ERROR_RATE_LIMIT":
             return "The AI tutor is a bit busy right now (rate limit reached). Please wait a few seconds and try again.", "AI_RATE_LIMITED"
 
-        # Handle technical errors from AIService gracefully
         if text.startswith("ERROR:"):
             return "I'm having a brief technical connection issue. Please try your response again, or click 'Refetch' to try a new question.", "AI_ERROR"
 
-        # 0. Clean DeepSeek Reasoning/Think Tags
+        # Clean DeepSeek Reasoning/Think Tags
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        text = re.sub(r"<think>.*", "", text, flags=re.DOTALL).strip() # Handle unclosed tags
+        text = re.sub(r"<think>.*", "", text, flags=re.DOTALL).strip()
         
-        # 1. Try to find Question and Ideal Answer using markers
-        # We look for "Question:" and "Ideal Answer:" or similar variations
+        # Try to find Question and Ideal Answer using markers
         q_patterns = [
             r"(?i)Question[:\s*]+(.*?)(?=(?:Ideal Answer|IDEAL ANSWER|Answer|ANSWER)|$)",
             r"(?i)\*\*Question:\*\*\s*(.*?)(?=(?:\*\*Ideal Answer:\*\*)|$)",
-            r"(?i)1\.\s*Question:\s*(.*?)(?=2\.\s*Ideal Answer|$)"
         ]
         
         a_patterns = [
             r"(?i)(?:Ideal Answer|IDEAL ANSWER|Answer|ANSWER)[:\s*]+(.*)",
             r"(?i)\*\*Ideal Answer:\*\*\s*(.*)",
-            r"(?i)2\.\s*Ideal Answer:\s*(.*)"
         ]
         
         q_text = None
@@ -255,36 +179,27 @@ class ProfessorBot:
                 a_text = match.group(1).strip()
                 break
         
-        # Fallback 1: If tags exist but are in common markdown list format without explicit labels
+        # Fallback: If no explicit labels but contains a question mark
         if not q_text and "?" in text:
-            # If there's an 'Ideal Answer' tag further down, split it
             if "ideal answer" in text.lower() or "answer:" in text.lower():
                 parts = re.split(r"(?i)(?:Ideal Answer|Answer)[:\s*]+", text, maxsplit=1)
                 if len(parts) == 2:
                     q_text = parts[0].strip()
                     a_text = parts[1].strip()
             else:
-                # Assume the whole thing is the question if it contains a question mark
-                # Removed the length restriction to support verbose Gemini/DeepSeek responses
                 q_text = text.strip()
                 a_text = "CONSULT_SOURCE_MATERIAL"
         
         if q_text:
-            # Clean up residual markdown (bolding tokens, hashes)
+            # Clean up markdown artifacts
             q_text = re.sub(r"^\*\*+|^\#+|\*\*+$", "", q_text).strip()
             q_text = re.sub(r"(?i)^Question:\s*", "", q_text).strip()
-            
-            # STRIKE SECTION/CHAPTER NUMBERS (Fail-safe for user requirement)
-            # Removes "Section 80.1", "Chapter 5", etc.
             q_text = re.sub(r"(?i)section\s*\d+(\.\d+)*", "", q_text)
             q_text = re.sub(r"(?i)chapter\s*\d+", "", q_text)
             q_text = re.sub(r"(?i)line[s]?\s*\d+([-]\d+)?", "", q_text)
-            
-            # STRIKE "unknown" author references
             q_text = re.sub(r"(?i)\*\*unknown\*\*", "the author", q_text)
             q_text = re.sub(r"(?i)unknown", "the author", q_text)
-            
-            q_text = re.sub(r"\s+", " ", q_text).strip() # Clean extra spaces
+            q_text = re.sub(r"\s+", " ", q_text).strip()
             
             if a_text:
                 a_text = re.sub(r"^\*\*+|^\#+|\*\*+$", "", a_text).strip()
@@ -292,9 +207,12 @@ class ProfessorBot:
             
             return q_text, a_text or "CONSULT_SOURCE_MATERIAL"
             
-        # Fallback 2: Split by the first question mark if everything else fails
+        # Last fallback: split by question mark
         if "?" in text:
              pos = text.find("?")
              return text[:pos+1].strip(), text[pos+1:].strip() if len(text) > pos+1 else "CONSULT_SOURCE_MATERIAL"
         
-        return "I'm interested in hearing your perspective on this. Could you elaborate?", "PENDING_STUDENT_RESPONSE"
+        # Final fallback: use chunk-aware question instead of vague generic
+        author = self.planner.get_chunk_author(chunk) if chunk else "the author"
+        return f"What is the central argument {author} makes in this reading?", "CONSULT_SOURCE_MATERIAL"
+

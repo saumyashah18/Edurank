@@ -508,109 +508,45 @@ def get_student_next_question(
 
     last_transcripts = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).limit(10).all()
     
-    # [PREVENT DOUBLE GENERATION]
-    # Check if a question was recently generated but not yet answered by this student.
-    from ..database.models.question import Question
-    from datetime import datetime, timedelta
-    
-    last_transcript = last_transcripts[0] if last_transcripts else None
-    student_struggled = False
+    # Build conversation history so the LLM has full context
     history_turns = []
-    current_chunk_id = None
-    current_chunk_turn_count = 0
-    
     if last_transcripts:
-        # Build history for AI awareness (Reverse to chronological)
         for t in reversed(last_transcripts):
             if t.question:
                 history_turns.append({"role": "bot", "text": t.question.question_text})
             history_turns.append({"role": "user", "text": t.student_answer})
- 
-        last_answer = last_transcript.student_answer
-        answer_low = (last_answer or "").lower()
-        if any(k in answer_low for k in ["don't know", "dont know", "skip", "clueless", "no idea"]):
-            student_struggled = True
-        elif last_transcript.score is not None and last_transcript.score < 0.3:
-            student_struggled = True
-        
-        # Track turns of the same chunk
-        q = db.query(Question).get(last_transcript.question_id)
-        current_chunk_id = None
-        if q:
-            current_chunk_id = q.chunk_id
-            for t in last_transcripts:
-                t_q = db.query(Question).get(t.question_id)
-                if t_q and t_q.chunk_id == current_chunk_id:
-                    current_chunk_turn_count += 1
-                else:
-                    break
  
     # 2. Topic Selection Logic
     try:
         services.bot.instructions = quiz.instructions 
         
         chunk = None
-        progression_type = "FUNDAMENTAL"
-        
-        # Apply strict 3+3 filter
-        # Turn 0, 1, 2 -> Reading 1 (Scott)
-        # Turn 3, 4, 5 -> Reading 2 (Citizens)
-        filters = ["Scott", "Seeing like a State"] if answered_count < 3 else ["Citizens", "Ordinary", "Anjaria"]
-        
-        if current_chunk_id and current_chunk_turn_count < 2 and not student_struggled:
-            # Check if current chunk matches the required reading filter
-            from ..database.models.chunk import Chunk
-            chunk = db.query(Chunk).get(current_chunk_id)
-            
-            # If we are supposed to switch readings (at turn 3), force a skip
-            is_switch_turn = (answered_count == 3)
-            if is_switch_turn:
-                chunk = None
-            else:
-                if current_chunk_turn_count > 0:
-                    progression_type = "FOLLOW_UP"
-
         author = None
-        if not chunk:
-            chunk, author = services.planner.select_next_topic(
-                course_id=quiz.course_id, 
-                enrollment_id=enrollment_id, 
-                quiz_id=quiz_id,
-                filter_keywords=filters
-            )
-            progression_type = "FUNDAMENTAL"
-        else:
-            author = services.planner.get_chunk_author(chunk)
-        
-        if not chunk:
-            # Fallback if specific filtered reading is not found, try any topic
-            chunk, author = services.planner.select_next_topic(course_id=quiz.course_id, enrollment_id=enrollment_id, quiz_id=quiz_id)
-            if not chunk:
-                return {
-                    "id": 999999,
-                    "text": "thank you for the user test assessment, you may now click to Finish assessment",
-                    "answer": "HIDDEN",
-                    "context": "Complete",
-                    "reset": True
-                }
 
-        # 3. Live Generation with Teacher-Style Awareness
-        print(f"DEBUG: Requesting {progression_type} question for Chunk {chunk.id} (Turn {answered_count})")
+        # Select a random chunk for this student (planner handles per-student randomization)
+        chunk, author = services.planner.select_next_topic(
+            course_id=quiz.course_id, 
+            enrollment_id=enrollment_id, 
+            quiz_id=quiz_id
+        )
         
-        # Calculate Phase for prompt
-        # Phase 1: Turns 0-1
-        # Phase 2: Turns 2-3
-        # Phase 3: Turns 4-5
-        phase_num = (answered_count // 2) + 1
+        if not chunk:
+            return {
+                "id": 999999,
+                "text": "Thank you for completing the assessment. You may now click to Finish Assessment.",
+                "answer": "HIDDEN",
+                "context": "Complete",
+                "reset": True
+            }
+
+        # Generate question — system instructions control all behavior (phases, greeting, topics)
+        print(f"DEBUG: Requesting question for Chunk {chunk.id} (Turn {answered_count})")
         
         question = services.bot.generate_single_question(
             chunk, 
             course_id=quiz.course_id, 
             author=author, 
-            student_struggled=student_struggled, 
-            history_turns=history_turns, 
-            progression_type=progression_type,
-            phase=f"PHASE {phase_num}" # New param for prompt
+            history_turns=history_turns
         )
         
         if not question:

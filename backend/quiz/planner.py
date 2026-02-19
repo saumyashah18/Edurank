@@ -8,10 +8,11 @@ class TopicPlanner:
 
     def select_next_topic(self, course_id: int, enrollment_id: str = None, quiz_id: int = None, filter_keywords: list = None, used_chunk_ids: list = None):
         """
-        Step 1: Live Topic Selection (Deterministic & Diverse)
-        Excludes used chunks and balances authors (Anjaria, Shapiro, Chatterjee).
+        Step 1: Live Topic Selection (Randomized per Student & Diverse)
+        Uses enrollment_id as a seed so each student gets a unique but reproducible question order.
         """
         import random
+        import hashlib
         from ..database.models.transcript import Transcript
         from ..database.models.question import Question
         from ..database.models.chunk import Chunk, ChunkType
@@ -22,16 +23,15 @@ class TopicPlanner:
             
         recent_authors = []
         if enrollment_id and quiz_id:
-            # Fetch used chunks
             used_chunk_q = self.db.query(Question.chunk_id, Question.question_text).join(Transcript, Transcript.question_id == Question.id).filter(Transcript.enrollment_id == enrollment_id, Transcript.quiz_id == quiz_id).all()
             used_chunk_ids.extend([r[0] for r in used_chunk_q])
             
-            # Simple heuristic for recent authors in last 3 questions
+            # Track recent authors to avoid repetition
             for _, q_text in used_chunk_q[-3:]:
                 q_text_lower = q_text.lower()
-                if "anjaria" in q_text_lower: recent_authors.append("anjaria")
-                if "shapiro" in q_text_lower: recent_authors.append("shapiro")
-                if "chatterjee" in q_text_lower: recent_authors.append("chatterjee")
+                for name in ["anjaria", "shapiro", "chatterjee", "held", "scott", "gupta", "ferguson", "palshikar", "jeffrey", "mehta", "khosla", "vaishnav"]:
+                    if name in q_text_lower:
+                        recent_authors.append(name)
 
         # 2. Fetch all chapters/sections for the course
         chapters = self.db.query(Chapter).filter_by(course_id=course_id).order_by(Chapter.order).all()
@@ -40,16 +40,13 @@ class TopicPlanner:
         for chapter in chapters:
             for section in chapter.sections:
                 for subsection in section.subsections:
-                    # Filter by keywords if provided (STRICT COMPLIANCE)
+                    # Filter by keywords if provided
                     matches_filter = True
                     if filter_keywords:
-                        # Fetch one chunk to check content if needed, but hierarchy matches are better
                         full_context = f"{chapter.title} {section.title} {subsection.title}".lower()
-                        # Also check the FIRST chunk of this subsection for author keywords
                         sample_chunk = self.db.query(Chunk).filter_by(subsection_id=subsection.id).first()
                         if sample_chunk:
                             full_context += " " + sample_chunk.content[:1000].lower()
-                        
                         matches_filter = any(k.lower() in full_context for k in filter_keywords)
                     
                     if matches_filter:
@@ -60,29 +57,36 @@ class TopicPlanner:
                         ).all()
                         
                         for chunk in available_chunks:
-                            # 3. Author Heuristic (Check first 500 chars)
                             content_low = chunk.content[:500].lower()
                             author = "unknown"
-                            if "anjaria" in content_low: author = "anjaria"
-                            elif "shapiro" in content_low: author = "shapiro"
-                            elif "chatterjee" in content_low: author = "chatterjee"
+                            for name in ["anjaria", "shapiro", "chatterjee", "held", "scott", "gupta", "ferguson", "palshikar", "jeffrey", "mehta", "khosla", "vaishnav"]:
+                                if name in content_low:
+                                    author = name
+                                    break
                             
                             candidates.append({
                                 "chunk": chunk,
                                 "author": author
                             })
 
-        # 4. Deterministic Selection (Follow Syllabus Order)
+        # 3. Randomized Selection (per-student seed for variety)
         if candidates:
-            # We follow the syllabus order (Chapter -> Section -> Subsection)
-            # instead of random choice, so the teacher's preview order matches the student's.
-            diverse_candidates = [c for c in candidates if c["author"] != "unknown" and c["author"] not in recent_authors]
+            # Create a deterministic seed from enrollment_id so each student
+            # gets a DIFFERENT order, but their order is reproducible
+            seed_str = enrollment_id or "professor_simulation"
+            seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16)
+            rng = random.Random(seed + len(used_chunk_ids))  # Shift seed each turn
+            
+            # Prefer chunks from authors NOT recently used (diversity)
+            diverse_candidates = [c for c in candidates if c["author"] not in recent_authors and c["author"] != "unknown"]
             
             if diverse_candidates:
-                chosen = diverse_candidates[0] # Pick the FIRST (chronological) instead of random
+                rng.shuffle(diverse_candidates)
+                chosen = diverse_candidates[0]
                 return chosen["chunk"], chosen["author"]
             
-            # Fallback to the first available candidate
+            # Fallback: shuffle all candidates
+            rng.shuffle(candidates)
             chosen = candidates[0]
             return chosen["chunk"], chosen["author"]
         
@@ -92,17 +96,14 @@ class TopicPlanner:
         """Helper to identify the author of a chunk based on content heuristics."""
         if not chunk:
             return "unknown"
-        # Detect author for current chunk manually if staying on same topic
         content_low = chunk.content[:500].lower()
-        if "anjaria" in content_low: return "anjaria"
-        if "shapiro" in content_low: return "shapiro"
-        if "chatterjee" in content_low: return "chatterjee"
+        for name in ["anjaria", "shapiro", "chatterjee", "held", "scott", "gupta", "ferguson", "palshikar", "jeffrey", "mehta", "khosla", "vaishnav"]:
+            if name in content_low:
+                return name
         return "the author"
-
 
     def _needs_more_exploration(self, subsection_id: int) -> bool:
         """Determines if a subsection needs more coverage based on total generated questions."""
         from ..database.models.question import Question
         q_count = self.db.query(Question).filter_by(subsection_id=subsection_id).count()
-        # Ensure we don't over-saturate a single topic (up to 20 questions per section for the pool)
         return q_count < 20
