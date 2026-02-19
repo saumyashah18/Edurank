@@ -9,11 +9,14 @@ load_dotenv()
 # Use SQLite for local development by default, or Postgres if specified
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./edurank.db")
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
-    # SQLite-specific connect_args are only needed for SQLite
-    **({"connect_args": {"check_same_thread": False}} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {})
-)
+_engine_kwargs = {}
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+elif "supabase.co" in SQLALCHEMY_DATABASE_URL:
+    _engine_kwargs["connect_args"] = {"sslmode": "require"}
+    _engine_kwargs["pool_pre_ping"] = True  # reconnect on stale connections
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **_engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 db_session = scoped_session(SessionLocal)
