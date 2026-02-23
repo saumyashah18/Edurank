@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
 import {
-    Mic, MicOff, Send, Clock,
-    AlertCircle, CheckCircle2, ChevronRight,
-    Play, Pause, Volume2, Pencil, X,
+    Mic, MicOff, Send,
+    CheckCircle2,
+    Volume2, Pencil,
     User, Timer, Loader2
 } from 'lucide-react';
 import { useLocation, useParams } from 'react-router-dom';

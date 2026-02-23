@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-    Upload, FileText, CheckCircle2, AlertCircle,
-    RefreshCw, Play, Save, Lock, GripVertical,
-    ThumbsUp, ThumbsDown, Copy, Mic, MicOff, Infinity, Pencil, X,
+    FileText,
+    RefreshCw, Lock,
+    ThumbsUp, ThumbsDown, Copy, Mic, MicOff, Infinity, Pencil,
     Check, Globe
 } from 'lucide-react';
 import { Button } from '../components/Button';
