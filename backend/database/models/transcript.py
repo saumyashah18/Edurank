@@ -31,6 +31,7 @@ class Transcript(BaseModel):
     student_answer = Column(Text)
     ai_evaluation = Column(Text) # Store AI reasoning
     score = Column(Float)
+    conceptual_gap = Column(Boolean, default=False)
     
     # Audit fields
     retrieved_chunk_ids = Column(String) # Comma-separated or JSON list

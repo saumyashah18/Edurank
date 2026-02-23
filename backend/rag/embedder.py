@@ -1,4 +1,4 @@
-from huggingface_hub import InferenceClient
+from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
 from sqlalchemy.orm import Session
@@ -8,6 +8,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Global model instance (loaded once, reused across requests)
+_model = None
+
+def _get_model(model_name: str = "BAAI/bge-large-en-v1.5"):
+    global _model
+    if _model is None:
+        print(f"[*] Loading local embedding model: {model_name} (first load downloads ~1.3GB)...")
+        _model = SentenceTransformer(model_name)
+        print(f"[*] Embedding model loaded successfully.")
+    return _model
+
+
 class Embedder:
     def __init__(self, db: Session, model_name: str = "BAAI/bge-large-en-v1.5"):
         self.db = db
@@ -15,10 +27,9 @@ class Embedder:
         # BGE-Large-en-v1.5 dimension is 1024
         self.dimension = 1024 
         self.index_path = "faiss_index/index.faiss"
-        self.hf_token = os.getenv("HF_TOKEN")
         
-        print(f"[*] Initializing Hugging Face Embedding Client: {self.model_name}")
-        self.client = InferenceClient(model=self.model_name, token=self.hf_token)
+        print(f"[*] Initializing Local Embedding Model: {self.model_name}")
+        self.model = _get_model(model_name)
         
         if os.path.exists(self.index_path):
             try:
@@ -46,20 +57,11 @@ class Embedder:
             return
 
         texts = [c.content for c in chunks]
-        print(f"[*] Encoding {len(texts)} chunks via Hugging Face API...")
+        print(f"[*] Encoding {len(texts)} chunks locally with {self.model_name}...")
         
-        # Hugging Face Inference API
-        all_embeddings = []
-        for text in texts:
-            try:
-                emb = self.client.feature_extraction(text)
-                all_embeddings.append(emb)
-            except (Exception, StopIteration) as e:
-                print(f"[!] Embedding Error for text: {e}")
-                # Fallback to zero vector if one chunk fails
-                all_embeddings.append([0.0] * self.dimension)
-            
-        embeddings = np.array(all_embeddings).astype('float32')
+        # Local embedding — no API calls, no rate limits
+        embeddings = self.model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        embeddings = np.array(embeddings).astype('float32')
         
         # Add to FAISS and map IDs
         print(f"[*] Syncing {len(embeddings)} vectors to FAISS...")
@@ -95,10 +97,10 @@ class RAGService:
 
     def retrieve(self, query: str, top_k: int = 3, chunk_types: list = None):
         """
-        Retrieves chunks using Hugging Face embeddings and FAISS similarity.
+        Retrieves chunks using local embeddings and FAISS similarity.
         """
         try:
-            query_embedding = self.embedder.client.feature_extraction(query)
+            query_embedding = self.embedder.model.encode([query], normalize_embeddings=True)
             query_embedding = np.array(query_embedding).astype('float32').reshape(1, -1)
         except (Exception, StopIteration) as e:
             print(f"[!] RAG Retrieval Embedding Error: {e}")
@@ -116,4 +118,3 @@ class RAGService:
                 results.append(chunk)
         
         return results
-

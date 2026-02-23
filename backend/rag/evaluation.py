@@ -42,18 +42,20 @@ class EvaluationService:
         1. Score (0.0 to 1.0)
         2. Reasoning (Brief explanation of why this score was given)
         3. Any missing points from the syllabus.
+        4. Conceptual Gap Detected (True/False - set to True ONLY if the student demonstrates a fundamental misunderstanding. If they made a minor error, set to False).
         """
         
         response_text = self.llm.generate_content(prompt)
         
         if "ERROR_RATE_LIMIT" in response_text:
-            return {"score": 0.5, "reasoning": "AI Evaluation busy", "retrieved_chunk_ids": chunk_ids}
+            return {"score": 0.5, "reasoning": "AI Evaluation busy", "conceptual_gap": False, "retrieved_chunk_ids": chunk_ids}
 
         # Parse AI response for score and reasoning
         import re
         # Support both 0.8 and 8/10 formats
         score_match = re.search(r"(?i)score[:\s*]+(\d+(?:\.\d+)?)", response_text)
-        reasoning_match = re.search(r"(?i)reasoning[:\s*]+(.*?)(?=\d\.|Missing|\Z)", response_text, re.DOTALL)
+        reasoning_match = re.search(r"(?i)reasoning[:\s*]+(.*?)(?=\d\.|Missing|Conceptual|\Z)", response_text, re.DOTALL)
+        gap_match = re.search(r"(?i)Conceptual Gap Detected[:\s*]+(Yes|No|True|False)", response_text)
         
         raw_score = float(score_match.group(1)) if score_match else 0.5
         # Normalize score to 0.0 - 1.0 if it seems to be out of 10 or 100
@@ -65,10 +67,12 @@ class EvaluationService:
             score = raw_score
             
         reasoning = reasoning_match.group(1).strip() if reasoning_match else response_text
+        conceptual_gap = True if gap_match and gap_match.group(1).lower() in ["yes", "true"] else False
 
         return {
             "score": score,
             "reasoning": reasoning,
+            "conceptual_gap": conceptual_gap,
             "retrieved_chunk_ids": chunk_ids
         }
 

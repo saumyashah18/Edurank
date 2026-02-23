@@ -70,17 +70,102 @@ class MaterialProcessor:
                 print(f"    -> Pages Detected: {total_pages}")
                 
                 full_text = ""
+                valid_text_pages = 0
                 for i, page in enumerate(doc):
                     # sort=True forces reading by physical layout (columns/blocks) vs stream
-                    page_text = page.get_text(sort=True) 
+                    page_text = page.get_text(sort=True).replace("\0", "")
                     
-                    if not page_text.strip():
-                        print(f"    [WARNING] Page {i+1} appears empty or scanned (no text layer found).")
+                    # text density check
+                    clean_text = page_text.strip()
+                    if len(clean_text) < 50:
+                         # Likely a scanned page or just a page number
+                         pass 
+                    else:
+                         valid_text_pages += 1
                     
                     full_text += page_text
-                    # Print every 10 pages for large docs to avoid terminal flooding, or every page for small ones
+                    
                     if total_pages < 20 or (i + 1) % 10 == 0 or (i + 1) == total_pages:
                         print(f"    [PROGRESS] Page {i+1}/{total_pages} extracted. [OK]")
+                
+                # SCANNED PDF DETECTION & AUTO-OCR
+                if total_pages > 0:
+                     readability_ratio = valid_text_pages / total_pages
+                     if readability_ratio < 0.1 and not os.path.exists(file_path.replace(".pdf", "_ORIGINAL.pdf")): # Check if already processed
+                          print(f"    [!] DETECTED SCANNED PDF: Only {valid_text_pages}/{total_pages} pages have text.")
+                          print(f"    [*] INITIATING CHUNKED AUTO-OCR (Optical Character Recognition)...")
+                          
+                          try:
+                               import ocrmypdf
+                               
+                               # CHUNKED PROCESSING STRATEGY (Corrected: Actual Split -> OCR -> Merge)
+                               chunk_size = 25 # Process 25 pages at a time
+                               num_chunks = (total_pages + chunk_size - 1) // chunk_size
+                               temp_outputs = []
+                               
+                               print(f"    [*] Splitting into {num_chunks} chunks for stability...")
+                               
+                               for i in range(num_chunks):
+                                   start_idx = i * chunk_size
+                                   end_idx = min((i + 1) * chunk_size, total_pages)
+                                   
+                                   # 1. Extract Chunk to temp PDF
+                                   chunk_input = file_path.replace(".pdf", f"_part{i}_in.pdf")
+                                   chunk_output = file_path.replace(".pdf", f"_part{i}_out.pdf")
+                                   
+                                   print(f"    [-->] Preparing Chunk {i+1}/{num_chunks} (Pages {start_idx+1}-{end_idx})...")
+                                   
+                                   chunk_doc = fitz.open()
+                                   chunk_doc.insert_pdf(doc, from_page=start_idx, to_page=end_idx-1)
+                                   chunk_doc.save(chunk_input)
+                                   chunk_doc.close()
+                                   
+                                   # 2. Run OCR on this small chunk
+                                   # We don't use --pages here because the input is ONLY the chunk
+                                   ocrmypdf.ocr(
+                                       chunk_input, 
+                                       chunk_output, 
+                                       deskew=True, 
+                                       force_ocr=True, 
+                                       jobs=1, 
+                                       optimize=0
+                                   )
+                                   
+                                   temp_outputs.append(chunk_output)
+                                   os.remove(chunk_input) # Cleanup temp input
+                               
+                               print(f"    [SUCCESS] All chunks OCR'd. Merging into searchable master...")
+                               
+                               # 3. Merge chunks into final OCR file
+                               merged_doc = fitz.open()
+                               for chunk_pdf in temp_outputs:
+                                   with fitz.open(chunk_pdf) as sub_doc:
+                                       merged_doc.insert_pdf(sub_doc)
+                                   # Cleanup chunk file
+                                   os.remove(chunk_pdf)
+                               
+                               output_path = file_path.replace(".pdf", "_OCR.pdf")
+                               merged_doc.save(output_path)
+                               merged_doc.close()
+
+                               print(f"    [SUCCESS] OCR COMPLETE. Swapping in final file...")
+                               
+                               # SWAP LOGIC: Backup original -> Overwrite input -> Recurse on input
+                               original_backup = file_path.replace(".pdf", "_ORIGINAL.pdf")
+                               if os.path.exists(output_path):
+                                   os.rename(file_path, original_backup)
+                                   os.rename(output_path, file_path)
+                                   print(f"    [*] Replaced original file. Backup saved to: {original_backup}")
+                               
+                               # Recursive call with ORIGINAL path (which now contains readable text)
+                               return self._extract_structure(file_path, file_type)
+                               
+                          except ImportError:
+                               print(f"    [ERROR] ocrmypdf not installed. Cannot perform Auto-OCR.")
+                               raise ValueError("Scanned PDF detected and OCR tools are missing. Please upload a searchable PDF.")
+                          except Exception as ocr_e:
+                               print(f"    [ERROR] Auto-OCR Failed: {ocr_e}")
+                               raise ValueError(f"Failed to OCR scanned PDF: {ocr_e}")
                 
                 print(f"[*] Audit Phase 2: Hierarchical Syllabus Mapping")
                 
@@ -95,7 +180,7 @@ class MaterialProcessor:
                     end_page = min(i + pages_per_chapter, total_pages)
                     chapter_text = ""
                     for p_num in range(i, end_page):
-                        chapter_text += doc[p_num].get_text()
+                        chapter_text += doc[p_num].get_text().replace("\0", "")
                     
                     chap_num = (i // pages_per_chapter) + 1
                     chapters.append({

@@ -393,7 +393,8 @@ def get_student_transcript_messages(quiz_id: int, enrollment_id: str, db: Sessio
         messages.append({
             "role": "user",
             "text": t.student_answer,
-            "type": "answer"
+            "type": "answer",
+            "question_id": t.question_id
         })
         
     return messages
@@ -437,14 +438,21 @@ def update_student_response(
     """Updates a student's previous response WITHOUT triggering AI generation."""
     from ..database.models.transcript import Transcript
     
+    q_id = data.get('question_id')
+    e_id = data.get('enrollment_id')
+    
+    if not q_id or not e_id:
+        raise HTTPException(status_code=400, detail="Missing question_id or enrollment_id")
+
     transcript = db.query(Transcript).filter_by(
         quiz_id=quiz_id,
-        question_id=data.get('question_id'),
-        enrollment_id=data.get('enrollment_id')
+        question_id=int(q_id),
+        enrollment_id=str(e_id)
     ).first()
     
     if not transcript:
-        raise HTTPException(status_code=404, detail="Response not found")
+        print(f"[*] Update Failed: No transcript found for Quiz {quiz_id}, Question {q_id}, Student {e_id}")
+        raise HTTPException(status_code=404, detail="Original response not found in database.")
         
     transcript.student_answer = data.get('new_answer')
     db.commit()
@@ -522,13 +530,58 @@ def get_student_next_question(
         
         chunk = None
         author = None
-
-        # Select a random chunk for this student (planner handles per-student randomization)
-        chunk, author = services.planner.select_next_topic(
-            course_id=quiz.course_id, 
-            enrollment_id=enrollment_id, 
-            quiz_id=quiz_id
-        )
+        is_follow_up = False
+        
+        # Turn Tracking & Phase Calculation
+        # Turn 0, 1, 2 -> Topic 1 (Phases 1, 2, 3)
+        # Turn 3, 4, 5 -> Topic 2 (Phases 1, 2, 3)
+        current_turn_in_topic = answered_count % 3
+        phase = current_turn_in_topic + 1
+        
+        last_interaction = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).first()
+        
+        # --- Conceptual Gap Detection ---
+        if last_interaction and last_interaction.conceptual_gap:
+            print(f"[*] CONCEPTUAL GAP DETECTED in last turn. Attempting to find related prerequisite material.")
+            
+            # 1. Try Knowledge Graph (Prerequisites/Related)
+            last_chunk_id = last_interaction.question.chunk_id if last_interaction.question else None
+            related_chunk = None
+            if last_chunk_id:
+                related_chunk = services.bot.get_related_chunk(last_chunk_id)
+            
+            if related_chunk:
+                print(f"[*] Found related chunk {related_chunk.id} via Knowledge Graph. Switching topic.")
+                chunk = related_chunk
+                author = services.planner.get_chunk_author(chunk)
+            else:
+                # 2. Fallback: Stay on same section
+                print(f"[*] No graph relation found. Staying in current section.")
+                preferred_section_id = last_interaction.question.subsection.section_id if last_interaction.question and last_interaction.question.subsection else None
+                chunk, author = services.planner.select_next_topic(
+                    course_id=quiz.course_id, 
+                    enrollment_id=enrollment_id, 
+                    quiz_id=quiz_id,
+                    preferred_section_id=preferred_section_id
+                )
+            is_follow_up = True
+        else:
+            # Normal Flow: Determine if we should stay on the same topic/section
+            preferred_section_id = None
+            
+            # STRICT 3-Question Arc on the SAME Chunk
+            if current_turn_in_topic > 0 and last_interaction and last_interaction.question:
+                 print(f"[*] Phrase {phase} of 3: Staying on SAME CHUNK ID {last_interaction.question.chunk_id}")
+                 chunk = last_interaction.question.chunk
+                 author = services.planner.get_chunk_author(chunk)
+            else:
+                # Start of NEW Topic (Phase 1)
+                chunk, author = services.planner.select_next_topic(
+                    course_id=quiz.course_id, 
+                    enrollment_id=enrollment_id, 
+                    quiz_id=quiz_id,
+                    preferred_section_id=None
+                )
         
         if not chunk:
             return {
@@ -540,13 +593,16 @@ def get_student_next_question(
             }
 
         # Generate question — system instructions control all behavior (phases, greeting, topics)
-        print(f"DEBUG: Requesting question for Chunk {chunk.id} (Turn {answered_count})")
+        print(f"DEBUG: Turn {answered_count + 1} (Topic Turn {current_turn_in_topic + 1}, Phase {phase}, Follow-up: {is_follow_up}) for Chunk {chunk.id}")
         
         question = services.bot.generate_single_question(
             chunk, 
             course_id=quiz.course_id, 
             author=author, 
-            history_turns=history_turns
+            history_turns=history_turns,
+            turn_number=answered_count + 1,
+            is_follow_up=is_follow_up,
+            phase=phase
         )
         
         if not question:

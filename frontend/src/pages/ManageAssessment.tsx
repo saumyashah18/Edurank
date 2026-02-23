@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
-import { FileDown, User, Eye, History, Send } from 'lucide-react';
+import { FileDown, User, Eye, History, Send, Pencil } from 'lucide-react';
 import { useParams } from 'react-router-dom';
 import client from '../api/client';
 
@@ -29,7 +29,45 @@ export const ManageAssessment: React.FC = () => {
     const [studentMessages, setStudentMessages] = useState<ChatMessage[]>([]);
     const [quizMeta, setQuizMeta] = useState<any>(null);
 
-    
+    // Editing State
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+    const [editText, setEditText] = useState("");
+
+    const handleEditClick = (msg: ChatMessage) => {
+        setEditingMessageId(msg.id);
+        setEditText(msg.text);
+    };
+
+    const handleSaveEdit = async (msg: ChatMessage) => {
+        if (!editText.trim()) return;
+        if (!msg.questionId) {
+            console.error("Missing questionId for message:", msg);
+            alert("Internal Error: Missing question ID for this response.");
+            return;
+        }
+
+        const originalText = msg.text;
+        // Optimistic update
+        setStudentMessages(prev => prev.map(m => m.id === msg.id ? { ...m, text: editText } : m));
+        setEditingMessageId(null);
+
+        try {
+            console.log(`[*] Professor updating student response: Question ${msg.questionId}, Enrollment ${selectedStudent?.enrollment_id}`);
+            await client.put(`/student/quiz/${quizId}/response`, {
+                question_id: msg.questionId,
+                enrollment_id: selectedStudent?.enrollment_id,
+                new_answer: editText
+            });
+            console.log("[+] Student response updated by professor.");
+        } catch (err: any) {
+            console.error("[-] Professor save edit failed:", err.response?.data || err.message);
+            // Revert on failure
+            setStudentMessages(prev => prev.map(m => m.id === msg.id ? { ...m, text: originalText } : m));
+            alert(`Failed to save edit: ${err.response?.data?.detail || "Connection Error"}`);
+        }
+    };
+
+
     const [previewMessages, setPreviewMessages] = useState<ChatMessage[]>([
         { id: '1', role: 'bot', text: "👋 Welcome to the Assessment Preview. You can test your AI's behavior here before students join." }
     ]);
@@ -68,7 +106,8 @@ export const ManageAssessment: React.FC = () => {
             setStudentMessages(data.map((m: any, i: number) => ({
                 id: i.toString(),
                 role: m.role,
-                text: m.text
+                text: m.text,
+                questionId: m.question_id
             })));
         } catch (err) {
             console.error("Failed to fetch student messages", err);
@@ -285,11 +324,50 @@ export const ManageAssessment: React.FC = () => {
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-4 scrollbar-hide">
                                         {studentMessages.map((msg, i) => (
-                                            <div key={i} className={`max-w-[85%] rounded-[24px] p-4 text-sm leading-relaxed ${msg.role === 'bot'
+                                            <div key={i} className={`max-w-[85%] rounded-[24px] p-4 text-sm leading-relaxed transition-all ${msg.role === 'bot'
                                                 ? 'self-start bg-white/[0.05] border border-white/10 text-gray-100 rounded-bl-none'
                                                 : 'self-end bg-accent text-[#062e6f] font-medium rounded-br-none'
                                                 }`}>
-                                                {msg.text}
+                                                {editingMessageId === msg.id ? (
+                                                    <div className="flex flex-col gap-3 w-full min-w-[300px] md:min-w-[500px]">
+                                                        <div className="text-[10px] uppercase tracking-widest font-bold text-[#062e6f]/40 mb-1">Editing student response:</div>
+                                                        <textarea
+                                                            value={editText}
+                                                            onChange={e => setEditText(e.target.value)}
+                                                            className="bg-white/40 text-[#062e6f] placeholder-[#062e6f]/40 px-4 py-3 rounded-2xl text-sm w-full outline-none min-h-[120px] border border-[#062e6f]/20 focus:border-[#062e6f]/40 transition-all font-medium shadow-inner"
+                                                            autoFocus
+                                                        />
+                                                        <div className="flex justify-end gap-3 text-xs">
+                                                            <button
+                                                                onClick={() => setEditingMessageId(null)}
+                                                                className="px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-[#062e6f]/70 border border-[#062e6f]/10 transition-colors"
+                                                            >
+                                                                Cancel
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleSaveEdit(msg)}
+                                                                className="px-6 py-2 rounded-xl bg-[#062e6f] text-accent font-bold shadow-lg hover:brightness-110 transition-all active:scale-95"
+                                                            >
+                                                                Save Changes
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="relative group">
+                                                        {msg.text}
+                                                        {msg.role === 'user' && (
+                                                            <div className="mt-2 pt-2 border-t border-[#062e6f]/10 flex items-center">
+                                                                <button
+                                                                    onClick={() => handleEditClick(msg)}
+                                                                    className="text-[10px] uppercase tracking-wider font-bold opacity-60 hover:opacity-100 flex items-center gap-1 transition-opacity"
+                                                                >
+                                                                    <Pencil size={10} />
+                                                                    Edit Response
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
                                         ))}
                                     </div>

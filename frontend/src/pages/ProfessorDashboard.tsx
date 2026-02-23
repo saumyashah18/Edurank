@@ -395,28 +395,43 @@ export const ProfessorDashboard: React.FC = () => {
                                 : 'self-end bg-accent text-[#062e6f] font-medium rounded-br-none'
                                 }`}>
                                 {editingMessageId === msg.id ? (
-                                    <div className="flex gap-2 items-center">
-                                        <input
+                                    <div className="flex flex-col gap-3 w-full min-w-[300px] md:min-w-[500px]">
+                                        <div className="text-[10px] uppercase tracking-widest font-bold text-black/40 mb-1 font-mono">Simulating Response Edit:</div>
+                                        <textarea
                                             value={editText}
                                             onChange={e => setEditText(e.target.value)}
-                                            className="bg-white/20 text-white px-2 py-1 rounded text-sm w-full outline-none"
+                                            className="bg-white/40 text-[#062e6f] placeholder-[#062e6f]/40 px-4 py-3 rounded-2xl text-sm w-full outline-none min-h-[120px] border border-[#062e6f]/20 focus:border-[#062e6f]/40 transition-all font-medium shadow-inner"
                                             autoFocus
                                         />
-                                        <button onClick={() => handleSaveEdit(msg)} className="p-1 hover:text-white"><CheckCircle2 size={16} /></button>
-                                        <button onClick={() => setEditingMessageId(null)} className="p-1 hover:text-white"><X size={16} /></button>
+                                        <div className="flex justify-end gap-3 text-xs">
+                                            <button
+                                                onClick={() => setEditingMessageId(null)}
+                                                className="px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-[#062e6f]/70 border border-[#062e6f]/10 transition-colors"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button
+                                                onClick={() => handleSaveEdit(msg)}
+                                                className="px-6 py-2 rounded-xl bg-[#062e6f] text-accent font-bold shadow-lg hover:brightness-110 transition-all active:scale-95"
+                                            >
+                                                Save Changes (Simulation Only)
+                                            </button>
+                                        </div>
                                     </div>
                                 ) : (
-                                    <div className="group relative">
+                                    <div className="relative group">
                                         {msg.context && <small className="block opacity-60 mb-2 uppercase tracking-wider font-bold text-[10px]">{msg.context}</small>}
                                         {msg.text}
                                         {msg.role === 'user' && (
-                                            <button
-                                                onClick={() => handleEditClick(msg)}
-                                                className="absolute -left-6 top-0 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity p-1"
-                                                title="Edit response"
-                                            >
-                                                <Pencil size={12} />
-                                            </button>
+                                            <div className="mt-2 pt-2 border-t border-[#062e6f]/10 flex items-center">
+                                                <button
+                                                    onClick={() => handleEditClick(msg)}
+                                                    className="text-[10px] uppercase tracking-wider font-bold opacity-60 hover:opacity-100 flex items-center gap-1 transition-opacity"
+                                                >
+                                                    <Pencil size={10} />
+                                                    Edit Response
+                                                </button>
+                                            </div>
                                         )}
                                     </div>
                                 )}

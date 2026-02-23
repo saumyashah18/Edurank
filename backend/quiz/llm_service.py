@@ -1,9 +1,5 @@
 import os
 from openai import OpenAI
-<<<<<<< HEAD
-=======
-# import google.generativeai as genai # Deprecated/Removed
->>>>>>> 82a7db16200cfff6874ca7b5a5757162871971a8
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,39 +9,14 @@ class LLMService:
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.google_api_key = os.getenv("GOOGLE_API_KEY")
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-<<<<<<< HEAD
         self.model_name = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
         
         if self.groq_api_key:
             # Groq uses OpenAI-compatible API
-=======
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-        # Unify HF Token usage: Prefer HF_TOKEN (standard), fallback to HUGGINGFACE_API_KEY
-        self.hf_api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
-        self.model_name = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
-        
-        # Initialize Google if key is present and model is gemini
-        self.use_google = False
-        self.use_hf = False
-        
-        if self.google_api_key and "gemini" in self.model_name.lower():
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.google_api_key)
-                # Remove "google/" prefix for direct Google API calls if present
-                clean_model_name = self.model_name.replace("google/", "")
-                self.google_model = genai.GenerativeModel(clean_model_name)
-                self.use_google = True
-                print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
-            except ImportError:
-                print("[!] Google Generative AI package not found. Skipping Google initialization.")
-        elif self.groq_api_key and ("llama" in self.model_name.lower() or "mixtral" in self.model_name.lower() or "gemma" in self.model_name.lower() or "versatile" in self.model_name.lower()):
->>>>>>> 82a7db16200cfff6874ca7b5a5757162871971a8
             self.client = OpenAI(
                 base_url="https://api.groq.com/openai/v1",
                 api_key=self.groq_api_key,
             )
-<<<<<<< HEAD
             self.provider = "groq"
             print(f"[*] LLMService: Using Groq API for model {self.model_name}")
         elif self.google_api_key and "gemini" in self.model_name.lower():
@@ -56,16 +27,6 @@ class LLMService:
             self.provider = "google"
             print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
         elif self.openrouter_api_key:
-=======
-            print(f"[*] LLMService: Using Groq API for model {self.model_name}")
-        elif self.hf_api_key:
-            from huggingface_hub import InferenceClient
-            self.hf_client = InferenceClient(token=self.hf_api_key)
-            self.use_hf = True
-            print(f"[*] LLMService: Using Hugging Face Inference API for model {self.model_name}")
-        else:
-            # Fallback/Primary OpenRouter
->>>>>>> 82a7db16200cfff6874ca7b5a5757162871971a8
             self.client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
                 api_key=self.openrouter_api_key,
@@ -80,8 +41,18 @@ class LLMService:
         """Generates text content using Groq, Google, or OpenRouter."""
         try:
             if self.provider == "google":
-                full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-                response = self.google_model.generate_content(full_prompt)
+                # Official system_instruction support for modern Gemini models
+                if system_prompt:
+                    import google.generativeai as genai
+                    clean_model_name = self.model_name.replace("google/", "")
+                    model = genai.GenerativeModel(
+                        model_name=clean_model_name,
+                        system_instruction=system_prompt
+                    )
+                    response = model.generate_content(prompt)
+                else:
+                    response = self.google_model.generate_content(prompt)
+
                 try:
                     if response and response.text:
                         return response.text

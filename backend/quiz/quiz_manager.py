@@ -51,6 +51,7 @@ class QuizManager:
             student_answer=answer_text,
             ai_evaluation=eval_result.get("reasoning", "LOGGED_FOR_AUDIT"),
             score=eval_result.get("score", 0.0),
+            conceptual_gap=eval_result.get("conceptual_gap", False),
             time_taken_seconds=0
         )
         

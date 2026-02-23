@@ -109,19 +109,30 @@ export const StudentQuiz: React.FC = () => {
 
     const handleSaveEdit = async (msg: any) => {
         if (!editText.trim()) return;
+        if (!msg.questionId) {
+            console.error("Missing questionId for message:", msg);
+            alert("Internal Error: Missing question ID for this response.");
+            return;
+        }
 
+        const originalText = msg.text;
         // Optimistic update
         setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, text: editText } : m));
         setEditingMessageId(null);
 
         try {
-            await client.put(`/student/quiz/${quizId}/response`, {
+            console.log(`[*] Attempting to update response for Question ${msg.questionId}, Enrollment ${studentInfo?.enrollmentId}`);
+            const res = await client.put(`/student/quiz/${quizId}/response`, {
                 question_id: msg.questionId,
                 enrollment_id: studentInfo?.enrollmentId,
                 new_answer: editText
             });
-        } catch (err) {
-            alert("Failed to save edit");
+            console.log("[+] Response updated successfully:", res.data);
+        } catch (err: any) {
+            console.error("[-] Save edit failed:", err.response?.data || err.message);
+            // Revert on failure
+            setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, text: originalText } : m));
+            alert(`Failed to save edit: ${err.response?.data?.detail || "Connection Error"}`);
         }
     };
 
@@ -157,7 +168,12 @@ export const StudentQuiz: React.FC = () => {
         if (timeLeft === null || isFinished) return;
 
         if (timeLeft <= 0) {
-            setIsFinished(true); // Auto-submit/finish when time is up
+            // Auto-submit whatever the student has typed before ending the quiz
+            if (answer.trim() && currentQuestionId && studentInfo) {
+                handleSubmit();
+            } else {
+                setIsFinished(true);
+            }
             return;
         }
 
@@ -313,27 +329,43 @@ export const StudentQuiz: React.FC = () => {
                                     : 'self-end bg-accent text-[#062e6f] font-medium rounded-br-none'
                                     }`}>
                                     {editingMessageId === msg.id ? (
-                                        <div className="flex gap-2 items-center">
-                                            <input
+                                        <div className="flex flex-col gap-3 w-full min-w-[300px] md:min-w-[500px]">
+                                            <div className="text-[10px] uppercase tracking-widest font-bold text-white/50 mb-1">Editing your response:</div>
+                                            <textarea
                                                 value={editText}
                                                 onChange={e => setEditText(e.target.value)}
-                                                className="bg-white/20 text-white px-2 py-1 rounded text-sm w-full outline-none"
+                                                className="bg-white/10 text-[#062e6f] placeholder-[#062e6f]/40 px-4 py-3 rounded-2xl text-sm w-full outline-none min-h-[150px] border border-[#062e6f]/20 focus:border-[#062e6f]/40 transition-all font-medium shadow-inner"
                                                 autoFocus
+                                                placeholder="Clarify your answer..."
                                             />
-                                            <button onClick={() => handleSaveEdit(msg)} className="p-1 hover:text-white"><CheckCircle2 size={16} /></button>
-                                            <button onClick={() => setEditingMessageId(null)} className="p-1 hover:text-white"><X size={16} /></button>
+                                            <div className="flex justify-end gap-3 text-xs">
+                                                <button
+                                                    onClick={() => setEditingMessageId(null)}
+                                                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-[#062e6f]/70 border border-[#062e6f]/10 transition-colors"
+                                                >
+                                                    Cancel
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSaveEdit(msg)}
+                                                    className="px-6 py-2 rounded-xl bg-[#062e6f] text-accent font-bold shadow-lg hover:brightness-110 transition-all active:scale-95"
+                                                >
+                                                    Save Changes
+                                                </button>
+                                            </div>
                                         </div>
                                     ) : (
-                                        <div className="group relative">
+                                        <div className="relative group">
                                             {msg.text}
-                                            {msg.role === 'user' && (
-                                                <button
-                                                    onClick={() => handleEditClick(msg)}
-                                                    className="absolute -left-6 top-0 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity p-1"
-                                                    title="Edit response"
-                                                >
-                                                    <Pencil size={12} />
-                                                </button>
+                                            {msg.role === 'user' && !isFinished && (
+                                                <div className="mt-2 pt-2 border-t border-[#062e6f]/10 flex items-center">
+                                                    <button
+                                                        onClick={() => handleEditClick(msg)}
+                                                        className="text-[10px] uppercase tracking-wider font-bold opacity-60 hover:opacity-100 flex items-center gap-1 transition-opacity"
+                                                    >
+                                                        <Pencil size={10} />
+                                                        Edit Response
+                                                    </button>
+                                                </div>
                                             )}
                                         </div>
                                     )}
@@ -373,7 +405,7 @@ export const StudentQuiz: React.FC = () => {
                                     onChange={e => setAnswer(e.target.value)}
                                     placeholder={isRecording ? "Listening..." : isProcessingAudio ? "Processing voice..." : "Type your answer here..."}
                                     disabled={loading || isSubmitting || isRecording || isProcessingAudio}
-                                    className={`flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-hidden min-h-[52px] max-h-[200px] scrollbar-hide ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
+                                    className={`flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-y-auto overflow-x-hidden min-h-[52px] max-h-[200px] custom-scrollbar ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
                                     rows={1}
                                     onKeyDown={(e) => {
                                         if (e.key === 'Enter' && !e.shiftKey) {
