@@ -1,6 +1,14 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
+const getApiBaseUrl = () => {
+    if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    const { protocol, hostname } = window.location;
+    // In production (aissociate.ahduni.edu.in), use same origin with /api prefix (nginx proxies to backend)
+    if (hostname === 'aissociate.ahduni.edu.in') return `${protocol}//${hostname}`;
+    // Local dev fallback
+    return `http://${hostname}:8000`;
+};
+const API_BASE_URL = getApiBaseUrl();
 console.log("Current API Base URL:", API_BASE_URL);
 
 const client = axios.create({
