@@ -17,8 +17,8 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
         e.preventDefault();
         setError('');
 
-        if (!email.endsWith('@ahduni.edu.in')) {
-            setError('Only @ahduni.edu.in emails are allowed.');
+        if (!email.endsWith('@ahduni.edu.in') && !email.endsWith('@aissociate.ahduni.edu.in')) {
+            setError('Only @ahduni.edu.in or @aissociate.ahduni.edu.in emails are allowed.');
             return;
         }
 
