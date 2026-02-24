@@ -3,7 +3,7 @@ import axios from 'axios';
 const getApiBaseUrl = () => {
     if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
     const { protocol, hostname } = window.location;
-    // In production (aissociate.ahduni.edu.in), use same origin with /api prefix (nginx proxies to backend)
+    // In production (aissociate.ahduni.edu.in), use same origin (nginx proxies to backend)
     if (hostname === 'aissociate.ahduni.edu.in') return `${protocol}//${hostname}`;
     // Local dev fallback
     return `http://${hostname}:8000`;
@@ -37,5 +37,8 @@ export const api = {
         });
     }
 };
+
+// Direct HTTPS upload URL bypassing Cloudflare - uses self-signed cert on server
+export const DIRECT_UPLOAD_URL = 'https://10.20.10.131:8443';
 
 export default client;

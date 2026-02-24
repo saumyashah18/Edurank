@@ -8,7 +8,8 @@ import {
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Layout } from '../components/Layout';
-import client from '../api/client';
+import client, { DIRECT_UPLOAD_URL } from '../api/client';
+import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { useSpeechToText } from '../hooks/useSpeechToText';
@@ -127,7 +128,8 @@ export const ProfessorDashboard: React.FC = () => {
             formData.append('file', file);
 
             try {
-                await client.post('/professor/upload/1', formData);
+                // Upload directly to server IP, bypassing Cloudflare timeout
+                await axios.post(`${DIRECT_UPLOAD_URL}/professor/upload/1`, formData);
                 setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'ready' } : f));
             } catch (err) {
                 setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'failed' } : f));
