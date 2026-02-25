@@ -95,6 +95,18 @@ export const ProfessorDashboard: React.FC = () => {
 
     const [ingestionStatus, setIngestionStatus] = useState<'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'>('PENDING');
 
+    // Check ingestion status on page load (in case it was already completed before refresh)
+    useEffect(() => {
+        (async () => {
+            try {
+                const { data } = await client.get('/professor/ingestion-status/1');
+                setIngestionStatus(data.status);
+            } catch (err) {
+                // Ignore — course may not exist yet
+            }
+        })();
+    }, []);
+
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, isTyping]);

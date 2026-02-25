@@ -163,14 +163,36 @@ export const StudentQuiz: React.FC = () => {
         }
     }, [studentInfo, quizId]);
 
+    // Keep a ref to the latest answer so the timer can always access it
+    const answerRef = useRef(answer);
+    useEffect(() => { answerRef.current = answer; }, [answer]);
+
+    const currentQuestionIdRef = useRef(currentQuestionId);
+    useEffect(() => { currentQuestionIdRef.current = currentQuestionId; }, [currentQuestionId]);
+
     // Countdown Timer logic
     useEffect(() => {
         if (timeLeft === null || isFinished) return;
 
         if (timeLeft <= 0) {
             // Auto-submit whatever the student has typed before ending the quiz
-            if (answer.trim() && currentQuestionId && studentInfo) {
-                handleSubmit();
+            const pendingAnswer = answerRef.current?.trim();
+            const pendingQuestionId = currentQuestionIdRef.current;
+
+            if (pendingAnswer && pendingQuestionId && studentInfo) {
+                // Direct API call to avoid stale closure issues with handleSubmit
+                client.post(`/student/quiz/${quizId}/submit`, {
+                    question_id: pendingQuestionId,
+                    answer: pendingAnswer,
+                    student_name: studentInfo.name,
+                    enrollment_id: studentInfo.enrollmentId
+                }).then(() => {
+                    console.log("[*] Timer expired: auto-submitted last answer.");
+                }).catch((err) => {
+                    console.error("Auto-submit on timeout failed:", err);
+                }).finally(() => {
+                    setIsFinished(true);
+                });
             } else {
                 setIsFinished(true);
             }
@@ -231,6 +253,10 @@ export const StudentQuiz: React.FC = () => {
         }
     };
 
+    // Keep a ref to timeLeft so handleSubmit can access it without stale closures
+    const timeLeftRef = useRef(timeLeft);
+    useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
+
     const handleSubmit = async () => {
         if (!answer.trim() || !studentInfo || !currentQuestionId) return;
 
@@ -252,8 +278,13 @@ export const StudentQuiz: React.FC = () => {
                 enrollment_id: studentInfo.enrollmentId
             });
 
-            if (totalQuestionsLimit > 0 && currentQuestionIdx >= totalQuestionsLimit) {
-                setTimeout(() => setIsFinished(true), 1500);
+            const timeRemaining = timeLeftRef.current;
+            const reachedQuestionLimit = totalQuestionsLimit > 0 && currentQuestionIdx >= totalQuestionsLimit;
+            const notEnoughTime = timeRemaining !== null && timeRemaining <= 10;
+
+            if (reachedQuestionLimit || notEnoughTime) {
+                // Don't fetch another question — end the quiz
+                setTimeout(() => setIsFinished(true), 1000);
             } else {
                 fetchQuestion();
             }
