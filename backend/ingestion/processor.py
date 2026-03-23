@@ -59,8 +59,43 @@ class MaterialProcessor:
                 self.db.commit()
             print(f"\n❌ [FATAL ERROR] Ingestion Pipeline Failed: {e}")
 
+    def _extract_docx(self, file_path: str) -> List[Dict[str, Any]]:
+        import docx
+        doc = docx.Document(file_path)
+        full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        if not full_text:
+            return []
+            
+        chunk_size = 2000
+        text_chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+        
+        chapters = []
+        pages_per_chapter = 5
+        
+        for i in range(0, len(text_chunks), pages_per_chapter):
+            end_chunk = min(i + pages_per_chapter, len(text_chunks))
+            chapter_text = "".join(text_chunks[i:end_chunk])
+            chap_num = (i // pages_per_chapter) + 1
+            chapters.append({
+                "title": f"Chapter {chap_num} (Parts {i+1}-{end_chunk})",
+                "order": chap_num,
+                "sections": [{
+                    "title": f"Section {chap_num}.1",
+                    "order": 1,
+                    "subsections": [{
+                        "title": f"Content Block {chap_num}.1.1",
+                        "order": 1,
+                        "content": chapter_text
+                    }]
+                }]
+            })
+        return chapters
+
     def _extract_structure(self, file_path: str, file_type: str) -> List[Dict[str, Any]]:
         """Extracts structural hierarchy from the file with per-page 'surety' logs."""
+        if file_type == "docx":
+            return self._extract_docx(file_path)
+
         import fitz  # PyMuPDF
         print(f"[*] Audit Phase 1: Deep Text Extraction")
         

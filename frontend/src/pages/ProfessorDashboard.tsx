@@ -3,16 +3,16 @@ import {
     FileText,
     RefreshCw, Lock,
     ThumbsUp, ThumbsDown, Copy, Mic, MicOff, Infinity, Pencil,
-    Check, Globe
+    Check, Globe, Loader2
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Layout } from '../components/Layout';
-import client, { DIRECT_UPLOAD_URL } from '../api/client';
-import axios from 'axios';
+import client, { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { useSpeechToText } from '../hooks/useSpeechToText';
+import { useAudioRecorder } from '../hooks/useAudioRecorder';
 
 interface FileUpload {
     name: string;
@@ -38,6 +38,26 @@ export const ProfessorDashboard: React.FC = () => {
     const [questionCount, setQuestionCount] = useState(10);
     const { user } = useAuth();
     const [allowAudio, setAllowAudio] = useState(true);
+    
+    // AI Evaluation State
+    const [aiEvalEnabled, setAiEvalEnabled] = useState(false);
+    const [rubricCriteria, setRubricCriteria] = useState<{ id: string; name: string; marks: number }[]>([]);
+    
+    const handleAddCriterion = () => {
+        setRubricCriteria(prev => [...prev, { id: Date.now().toString(), name: '', marks: 5 }]);
+    };
+    
+    const handleRemoveCriterion = (id: string) => {
+        setRubricCriteria(prev => prev.filter(c => c.id !== id));
+    };
+
+    const handleUpdateCriterion = (id: string, field: 'name' | 'marks', value: string | number) => {
+        setRubricCriteria(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
+    };
+
+    // Calculate total marks from rubric if enabled, otherwise use the static score
+    const totalRubricMarks = rubricCriteria.reduce((sum, c) => sum + (Number(c.marks) || 0), 0);
+    const effectiveMarks = aiEvalEnabled && rubricCriteria.length > 0 ? totalRubricMarks : marks;
 
     // Editing State
     const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -73,7 +93,11 @@ export const ProfessorDashboard: React.FC = () => {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
 
-    const { isListening, startListening, stopListening } = useSpeechToText({
+    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const { isRecording: isAudioRecording, startRecording, stopRecording } = useAudioRecorder();
+    const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+
+    const { isListening, startListening, stopListening: stopSTT } = useSpeechToText({
         onResult: (transcript) => {
             const initial = initialTextRef.current;
             const spacer = initial && !initial.endsWith(' ') ? ' ' : '';
@@ -81,9 +105,39 @@ export const ProfessorDashboard: React.FC = () => {
         }
     });
 
-    const handleStartListening = () => {
-        initialTextRef.current = inputMessage;
-        startListening();
+    const isRecording = hasSpeechRecognition ? isListening : isAudioRecording;
+
+    const handleVoiceInput = async () => {
+        if (hasSpeechRecognition) {
+            if (isListening) {
+                stopSTT();
+            } else {
+                initialTextRef.current = inputMessage;
+                startListening();
+            }
+        } else {
+            if (isAudioRecording) {
+                setIsProcessingAudio(true);
+                try {
+                    const audioBlob = await stopRecording();
+                    const response = await api.transcribeAudio(audioBlob);
+                    const transcribedText = response.data.user_text;
+                    if (transcribedText) {
+                        setInputMessage(prev => {
+                            const prefix = prev.trim();
+                            return prefix ? prefix + " " + transcribedText : transcribedText;
+                        });
+                    }
+                } catch (err) {
+                    console.error("Transcription failed", err);
+                    alert("Could not process voice input. Please try again.");
+                } finally {
+                    setIsProcessingAudio(false);
+                }
+            } else {
+                await startRecording();
+            }
+        }
     };
 
     useEffect(() => {
@@ -140,8 +194,10 @@ export const ProfessorDashboard: React.FC = () => {
             formData.append('file', file);
 
             try {
-                // Upload directly to server IP, bypassing Cloudflare timeout
-                await axios.post(`${DIRECT_UPLOAD_URL}/professor/upload/1`, formData);
+                // Upload using the normal client
+                await client.post(`/professor/upload/1`, formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                });
                 setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'ready' } : f));
             } catch (err) {
                 setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'failed' } : f));
@@ -153,20 +209,32 @@ export const ProfessorDashboard: React.FC = () => {
         if (!examName || !instructions) return alert("Please fill all fields");
 
         setIsGenerating(true);
+        
+        // Prepare rubric JSON if enabled
+        let rubricJson = undefined;
+        if (aiEvalEnabled && rubricCriteria.length > 0) {
+            rubricJson = JSON.stringify({
+                total_marks: effectiveMarks,
+                criteria: rubricCriteria.map(c => ({ name: c.name, marks: Number(c.marks) }))
+            });
+        }
+        
         try {
             const res = await client.post(`/professor/quiz/create`, null, {
                 params: {
                     course_id: 1,
                     title: examName,
                     duration,
-                    total_marks: marks,
+                    total_marks: effectiveMarks,
                     instructions,
                     total_questions: questionLimit === 'infinite' ? -1 : questionCount,
-                    allow_audio: allowAudio
+                    allow_audio: allowAudio,
+                    ai_eval_enabled: aiEvalEnabled,
+                    ai_eval_rubric: rubricJson
                 }
             });
             setCurrentQuizId(res.data.quiz_id);
-            await client.post(`/professor/generate/1`, null, { params: { total_marks: marks } });
+            await client.post(`/professor/generate/1`, null, { params: { total_marks: effectiveMarks } });
             await fetchNextQuestion();
         } catch (err) {
             alert("Generation failed");
@@ -350,6 +418,77 @@ export const ProfessorDashboard: React.FC = () => {
                     </label>
                 </div>
 
+                <div className="flex flex-col gap-3 p-4 border border-border rounded-xl bg-white/5 transition-all">
+                    <div className="flex items-center justify-between">
+                        <div className="flex flex-col gap-1">
+                            <label className="text-sm font-medium text-gray-200">Enable AI Evaluation</label>
+                            <span className="text-[10px] text-gray-400">Score answers against a custom rubric</span>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="sr-only peer"
+                                checked={aiEvalEnabled}
+                                onChange={e => {
+                                    setAiEvalEnabled(e.target.checked);
+                                    if (e.target.checked && rubricCriteria.length === 0) {
+                                        handleAddCriterion(); // Add a default row when toggled on
+                                    }
+                                }}
+                            />
+                            <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none ring-0 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent"></div>
+                        </label>
+                    </div>
+
+                    {aiEvalEnabled && (
+                        <div className="flex flex-col gap-3 mt-2 pt-3 border-t border-white/10 animate-in fade-in slide-in-from-top-2 duration-300">
+                            <div className="flex justify-between items-center mb-1">
+                                <span className="text-xs font-bold uppercase tracking-widest text-[#a8b8d8]">Rubric Builder</span>
+                                <span className="text-xs font-mono font-bold text-accent bg-accent/10 px-2 py-0.5 rounded">Total: {totalRubricMarks}</span>
+                            </div>
+                            
+                            <div className="flex flex-col gap-2 max-h-[200px] overflow-y-auto pr-1 custom-scrollbar">
+                                {rubricCriteria.map((c) => (
+                                    <div key={c.id} className="flex items-center gap-2 bg-black/20 p-2 rounded-lg border border-white/5">
+                                        <div className="flex-1">
+                                            <input
+                                                type="text"
+                                                value={c.name}
+                                                onChange={e => handleUpdateCriterion(c.id, 'name', e.target.value)}
+                                                placeholder="e.g. Code correctness"
+                                                className="w-full bg-transparent text-sm text-gray-200 focus:outline-none placeholder-gray-600"
+                                            />
+                                        </div>
+                                        <div className="w-16 border-l border-white/10 pl-2">
+                                            <input
+                                                type="number"
+                                                value={c.marks}
+                                                onChange={e => handleUpdateCriterion(c.id, 'marks', parseInt(e.target.value) || 0)}
+                                                className="w-full bg-transparent text-sm text-center text-accent font-mono focus:outline-none"
+                                                min="1"
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={() => handleRemoveCriterion(c.id)}
+                                            className="p-1 text-red-400 hover:bg-red-400/20 rounded-md transition-colors"
+                                            title="Remove criterion"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                            
+                            <button
+                                onClick={handleAddCriterion}
+                                className="text-xs text-accent hover:text-white border border-accent/30 hover:bg-accent/20 border-dashed rounded-lg py-2 transition-all"
+                            >
+                                + Add Criterion
+                            </button>
+                        </div>
+                    )}
+                </div>
+
                 <div className="flex flex-col gap-2">
                     <label className="text-sm font-medium text-gray-200">Knowledge</label>
                     {files.filter(f => f.status === 'ready').length === 0 && (
@@ -503,11 +642,12 @@ export const ProfessorDashboard: React.FC = () => {
                             <div className="flex gap-2 mb-1">
                                 <button
                                     type="button"
-                                    onClick={isListening ? stopListening : handleStartListening}
-                                    className={`p-3 rounded-2xl transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
-                                    title={isListening ? 'Stop Listening' : 'Start Speech to Text'}
+                                    onClick={handleVoiceInput}
+                                    disabled={isTyping || isProcessingAudio}
+                                    className={`p-3 rounded-2xl transition-colors ${isRecording ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
+                                    title={isRecording ? 'Stop Listening' : 'Start Speech to Text'}
                                 >
-                                    {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+                                    {isProcessingAudio ? <Loader2 size={18} className="animate-spin" /> : isRecording ? <MicOff size={18} /> : <Mic size={18} />}
                                 </button>
 
                                 <Button

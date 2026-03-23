@@ -70,7 +70,18 @@ class TopicPlanner:
                         section_candidates[sid].append(chunk)
 
         if not section_candidates:
-            return None, None
+            fallback_chunks = self.db.query(Chunk).join(Subsection).join(Section).join(Chapter).filter(
+                Chapter.course_id == course_id,
+                Chunk.chunk_type == ChunkType.MEDIUM
+            ).all()
+            if not fallback_chunks:
+                return None, None
+            
+            import random
+            rng_fallback = random.Random()
+            rng_fallback.shuffle(fallback_chunks)
+            chosen_chunk = fallback_chunks[0]
+            return chosen_chunk, self.get_chunk_author(chosen_chunk)
 
         # 3. Per-student random seed
         seed_str = enrollment_id or "professor_simulation"

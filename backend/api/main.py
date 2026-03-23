@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Depends, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse
-
-
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from pydantic import BaseModel
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 from typing import List, Dict
 import os
+import json
 
 from ..database.session import SessionLocal, init_db
 from ..ingestion.processor import MaterialProcessor
@@ -105,7 +106,7 @@ def register_professor(data: dict, db: Session = Depends(get_db)):
 @app.get("/professor/assessments")
 def get_professor_assessments(db: Session = Depends(get_db)):
     """List all assessments for the professor dashboard."""
-    quizzes = db.query(Quiz).all() # Filter by professor in future
+    quizzes = db.query(Quiz).order_by(Quiz.id.desc()).all() # Filter by professor in future
     return [{
         "id": q.id,
         "title": q.title,
@@ -126,7 +127,8 @@ def run_material_ingestion(course_id: int, file_path: str):
     try:
         print(f"DEBUG: Starting background ingestion for {file_path}")
         processor = MaterialProcessor(db)
-        processor.process_material(course_id, file_path, "pdf")
+        file_ext = file_path.lower().split(".")[-1] if "." in file_path else "pdf"
+        processor.process_material(course_id, file_path, file_ext)
         print(f"DEBUG: Background ingestion complete for {file_path}")
     except Exception as e:
         print(f"ERROR in background ingestion: {e}")
@@ -297,7 +299,7 @@ def rank_question(question_id: int, interaction: str, db: Session = Depends(get_
     return {"status": "Ranked", "upvotes": question.upvotes, "downvotes": question.downvotes}
 
 @app.post("/professor/quiz/create")
-def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: str = None, allow_audio: bool = True, db: Session = Depends(get_db)):
+def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: str = None, allow_audio: bool = True, ai_eval_enabled: bool = False, ai_eval_rubric: str = None, db: Session = Depends(get_db)):
     """Saves the exam configuration including system instructions."""
     quiz = Quiz(
         course_id=course_id, 
@@ -306,7 +308,9 @@ def create_exam_config(course_id: int, title: str, duration: int, total_marks: i
         total_marks=total_marks,
         total_questions=total_questions,
         instructions=instructions,
-        allow_audio=allow_audio
+        allow_audio=allow_audio,
+        ai_eval_enabled=ai_eval_enabled,
+        ai_eval_rubric=ai_eval_rubric
     )
     db.add(quiz)
     db.commit()
@@ -322,7 +326,10 @@ def update_quiz_details(quiz_id: int, data: dict, db: Session = Depends(get_db))
     quiz.title = data.get("title", quiz.title)
     quiz.duration_minutes = data.get("duration", quiz.duration_minutes)
     quiz.instructions = data.get("instructions", quiz.instructions)
-    # total_marks could also be updated if needed
+    if "ai_eval_enabled" in data:
+        quiz.ai_eval_enabled = data["ai_eval_enabled"]
+    if "ai_eval_rubric" in data:
+        quiz.ai_eval_rubric = data["ai_eval_rubric"]
     
     db.commit()
     return {"status": "updated"}
@@ -371,7 +378,9 @@ def get_quiz_details(quiz_id: int, db: Session = Depends(get_db)):
         "duration_minutes": quiz.duration_minutes,
         "total_marks": quiz.total_marks,
         "total_questions": quiz.total_questions,
-        "is_finalized": quiz.is_finalized == 1
+        "is_finalized": quiz.is_finalized == 1,
+        "ai_eval_enabled": quiz.ai_eval_enabled or False,
+        "ai_eval_rubric": quiz.ai_eval_rubric
     }
 
 @app.get("/professor/quiz/{quiz_id}/student/{enrollment_id}/messages")
@@ -390,14 +399,79 @@ def get_student_transcript_messages(quiz_id: int, enrollment_id: str, db: Sessio
             "text": t.question.question_text if t.question else "N/A",
             "type": "question"
         })
+        # Parse AI eval results if available
+        ai_eval = None
+        if t.ai_eval_results:
+            try:
+                ai_eval = json.loads(t.ai_eval_results)
+            except json.JSONDecodeError:
+                pass
         messages.append({
             "role": "user",
             "text": t.student_answer,
             "type": "answer",
-            "question_id": t.question_id
+            "question_id": t.question_id,
+            "ai_eval_results": ai_eval
         })
         
     return messages
+
+@app.get("/professor/quiz/{quiz_id}/student/{enrollment_id}/ai-evaluation")
+def get_student_ai_evaluation(quiz_id: int, enrollment_id: str, db: Session = Depends(get_db)):
+    """Returns the aggregated rubric evaluation summary for a student's entire exam."""
+    quiz = db.query(Quiz).get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    
+    if not quiz.ai_eval_enabled:
+        return {"enabled": False}
+    
+    transcripts = db.query(Transcript).filter_by(
+        quiz_id=quiz_id,
+        enrollment_id=enrollment_id
+    ).order_by(Transcript.created_at).all()
+    
+    per_question = []
+    grand_total_awarded = 0
+    grand_total_max = 0
+    
+    for i, t in enumerate(transcripts):
+        q_text = t.question.question_text if t.question else "N/A"
+        if t.ai_eval_results:
+            try:
+                eval_data = json.loads(t.ai_eval_results)
+                awarded = eval_data.get("total_awarded", 0)
+                max_marks = eval_data.get("total_max", 0)
+                grand_total_awarded += awarded
+                grand_total_max += max_marks
+                per_question.append({
+                    "question_number": i + 1,
+                    "question_text": q_text,
+                    "student_answer": t.student_answer,
+                    "criteria_scores": eval_data.get("criteria_scores", []),
+                    "total_awarded": awarded,
+                    "total_max": max_marks,
+                    "overall_remark": eval_data.get("overall_remark", "")
+                })
+            except json.JSONDecodeError:
+                per_question.append({
+                    "question_number": i + 1,
+                    "question_text": q_text,
+                    "error": "Failed to parse evaluation"
+                })
+        else:
+            per_question.append({
+                "question_number": i + 1,
+                "question_text": q_text,
+                "note": "No rubric evaluation recorded"
+            })
+    
+    return {
+        "enabled": True,
+        "per_question": per_question,
+        "grand_total_awarded": grand_total_awarded,
+        "grand_total_max": grand_total_max
+    }
 
 # --- Student Endpoints ---
 @app.get("/student/quiz/{quiz_id}/meta")
@@ -667,6 +741,16 @@ def export_transcript(transcript_id: int, db: Session = Depends(get_db)):
     for i, t in enumerate(all_interactions):
         content += f"Q{i+1}: {t.question.question_text if t.question else 'N/A'}\n"
         content += f"STUDENT: {t.student_answer}\n"
+        if t.ai_eval_results:
+            try:
+                eval_data = json.loads(t.ai_eval_results)
+                content += f"AI EVALUATION:\n"
+                for cs in eval_data.get("criteria_scores", []):
+                    content += f"  - {cs['name']}: {cs.get('awarded', 0)}/{cs.get('max_marks', 0)} — {cs.get('remark', '')}\n"
+                content += f"  TOTAL: {eval_data.get('total_awarded', 0)}/{eval_data.get('total_max', 0)}\n"
+                content += f"  REMARK: {eval_data.get('overall_remark', '')}\n"
+            except json.JSONDecodeError:
+                pass
         content += f"{'-'*40}\n"
     
     from fastapi.responses import Response
@@ -868,3 +952,47 @@ async def voice_chat_general(
                 os.remove(temp_audio_path)
             except:
                 pass
+
+class SynthesizeRequest(BaseModel):
+    text: str
+
+@app.post("/api/voice-chat/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Transcribe an audio file and return the text."""
+    temp_audio_path = f"temp_transcribe_{file.filename}"
+    try:
+        with open(temp_audio_path, "wb") as f:
+            f.write(await file.read())
+            
+        user_text = voice_service.transcribe(temp_audio_path)
+        if not user_text:
+            return JSONResponse(status_code=400, content={"message": "Could not transcribe audio"})
+            
+        return {"user_text": user_text}
+    except Exception as e:
+        print(f"Error in transcription: {e}")
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    finally:
+        if os.path.exists(temp_audio_path):
+            try:
+                os.remove(temp_audio_path)
+            except:
+                pass
+
+@app.post("/api/voice-chat/synthesize")
+def synthesize_text(request: SynthesizeRequest):
+    """Synthesize text into speech and return the audio file."""
+    try:
+        output_audio_path = voice_service.synthesize(request.text)
+        if not output_audio_path or not os.path.exists(output_audio_path):
+             return JSONResponse(status_code=500, content={"message": "Failed to generate speech"})
+             
+        # Return the audio file and delete it after sending
+        return FileResponse(
+            output_audio_path, 
+            media_type="audio/mpeg", 
+            background=BackgroundTask(os.remove, output_audio_path)
+        )
+    except Exception as e:
+        print(f"Error in synthesis: {e}")
+        return JSONResponse(status_code=500, content={"message": str(e)})

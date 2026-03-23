@@ -13,7 +13,9 @@ class Quiz(BaseModel):
     password = Column(String)
     is_finalized = Column(Integer, default=0)
     instructions = Column(Text) 
-    allow_audio = Column(Boolean, default=True) # New field
+    allow_audio = Column(Boolean, default=True)
+    ai_eval_enabled = Column(Boolean, default=False)  # Toggle for AI rubric evaluation
+    ai_eval_rubric = Column(Text, nullable=True)  # JSON: {"total_marks": N, "criteria": [{"name": ..., "marks": N}]}
     
     transcripts = relationship("Transcript", back_populates="quiz")
     course = relationship("Course", backref="quizzes")
@@ -32,6 +34,7 @@ class Transcript(BaseModel):
     ai_evaluation = Column(Text) # Store AI reasoning
     score = Column(Float)
     conceptual_gap = Column(Boolean, default=False)
+    ai_eval_results = Column(Text, nullable=True)  # JSON: per-answer rubric evaluation results
     
     # Audit fields
     retrieved_chunk_ids = Column(String) # Comma-separated or JSON list

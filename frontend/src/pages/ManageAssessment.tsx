@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
-import { FileDown, User, Eye, History, Send, Pencil } from 'lucide-react';
+import { FileDown, User, Eye, History, Send, Pencil, Mic, MicOff, Loader2 } from 'lucide-react';
 import { useParams } from 'react-router-dom';
-import client from '../api/client';
+import client, { api } from '../api/client';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import { useAudioRecorder } from '../hooks/useAudioRecorder';
 
 interface Participant {
     id: number;
@@ -19,6 +21,12 @@ interface ChatMessage {
     text: string;
     context?: string;
     questionId?: number;
+    ai_eval_results?: {
+        criteria_scores: { name: string; max_marks: number; awarded: number; remark: string }[];
+        total_awarded: number;
+        total_max: number;
+        overall_remark: string;
+    };
 }
 
 export const ManageAssessment: React.FC = () => {
@@ -28,6 +36,7 @@ export const ManageAssessment: React.FC = () => {
     const [selectedStudent, setSelectedStudent] = useState<Participant | null>(null);
     const [studentMessages, setStudentMessages] = useState<ChatMessage[]>([]);
     const [quizMeta, setQuizMeta] = useState<any>(null);
+    const [aiEvalSummary, setAiEvalSummary] = useState<any>(null);
 
     // Editing State
     const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -75,6 +84,54 @@ export const ManageAssessment: React.FC = () => {
     const [inputMessage, setInputMessage] = useState('');
     const [seenQuestionIds, setSeenQuestionIds] = useState<number[]>([]);
 
+    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const { isRecording: isAudioRecording, startRecording, stopRecording } = useAudioRecorder();
+    const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+    const initialTextRef = React.useRef('');
+
+    const { isListening, startListening, stopListening: stopSTT } = useSpeechToText({
+        onResult: (transcript) => {
+            const initial = initialTextRef.current;
+            const spacer = initial && !initial.endsWith(' ') ? ' ' : '';
+            setInputMessage(initial + spacer + transcript);
+        }
+    });
+
+    const isRecording = hasSpeechRecognition ? isListening : isAudioRecording;
+
+    const handleVoiceInput = async () => {
+        if (hasSpeechRecognition) {
+            if (isListening) {
+                stopSTT();
+            } else {
+                initialTextRef.current = inputMessage;
+                startListening();
+            }
+        } else {
+            if (isAudioRecording) {
+                setIsProcessingAudio(true);
+                try {
+                    const audioBlob = await stopRecording();
+                    const response = await api.transcribeAudio(audioBlob);
+                    const transcribedText = response.data.user_text;
+                    if (transcribedText) {
+                        setInputMessage(prev => {
+                            const prefix = prev.trim();
+                            return prefix ? prefix + " " + transcribedText : transcribedText;
+                        });
+                    }
+                } catch (err) {
+                    console.error("Transcription failed", err);
+                    alert("Could not process voice input. Please try again.");
+                } finally {
+                    setIsProcessingAudio(false);
+                }
+            } else {
+                await startRecording();
+            }
+        }
+    };
+
     useEffect(() => {
         fetchParticipants();
         fetchQuizMeta();
@@ -107,10 +164,18 @@ export const ManageAssessment: React.FC = () => {
                 id: i.toString(),
                 role: m.role,
                 text: m.text,
-                questionId: m.question_id
+                questionId: m.question_id,
+                ai_eval_results: m.ai_eval_results
             })));
+            
+            // Fetch AI Evaluation Summary
+            setAiEvalSummary(null);
+            const summaryRes = await client.get(`/professor/quiz/${quizId}/student/${student.enrollment_id}/ai-evaluation`);
+            if (summaryRes.data.enabled) {
+                setAiEvalSummary(summaryRes.data);
+            }
         } catch (err) {
-            console.error("Failed to fetch student messages", err);
+            console.error("Failed to fetch student data", err);
         }
     };
 
@@ -227,6 +292,25 @@ export const ManageAssessment: React.FC = () => {
                                 value={quizMeta?.duration_minutes || 60}
                                 onChange={e => setQuizMeta({ ...quizMeta, duration_minutes: parseInt(e.target.value) })}
                             />
+                            
+                            {quizMeta?.ai_eval_enabled && quizMeta?.ai_eval_rubric && (
+                                <div className="mt-4 p-4 bg-accent/5 border border-accent/20 rounded-xl">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h4 className="text-xs font-bold text-accent uppercase tracking-widest">AI Rubric</h4>
+                                        <span className="text-xs font-mono font-bold text-accent bg-accent/10 px-2 py-0.5 rounded">
+                                            Total: {JSON.parse(quizMeta.ai_eval_rubric).total_marks}
+                                        </span>
+                                    </div>
+                                    <div className="flex flex-col gap-1 text-xs text-gray-300">
+                                        {JSON.parse(quizMeta.ai_eval_rubric).criteria.map((c: any, i: number) => (
+                                            <div key={i} className="flex justify-between items-center py-1 border-b border-white/5 last:border-0">
+                                                <span>{c.name}</span>
+                                                <span className="font-mono text-accent">{c.marks} pts</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <Button onClick={handleUpdateQuiz} variant="secondary" className="mt-4">
                                 Save Changes
@@ -272,6 +356,15 @@ export const ManageAssessment: React.FC = () => {
                                         className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent"
                                         disabled={isTyping}
                                     />
+                                    <button
+                                        type="button"
+                                        onClick={handleVoiceInput}
+                                        disabled={isTyping || isProcessingAudio}
+                                        className={`px-4 rounded-2xl transition-colors ${isRecording ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
+                                        title={isRecording ? 'Stop Listening' : 'Start Speech to Text'}
+                                    >
+                                        {isProcessingAudio ? <Loader2 size={18} className="animate-spin" /> : isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+                                    </button>
                                     <Button type="submit" variant="secondary" className="px-6 rounded-2xl" disabled={!inputMessage.trim() || isTyping}>
                                         <Send size={18} />
                                     </Button>
@@ -320,7 +413,15 @@ export const ManageAssessment: React.FC = () => {
                                             <h4 className="text-lg font-bold text-gray-100">{selectedStudent.name}</h4>
                                             <span className="px-2 py-0.5 bg-accent/10 text-accent rounded text-[10px] font-mono">{selectedStudent.enrollment_id}</span>
                                         </div>
-                                        <Button variant="secondary" icon={FileDown} onClick={handleExport}>Export History</Button>
+                                        <div className="flex items-center gap-4">
+                                            {aiEvalSummary && (
+                                                <div className="flex items-center gap-2 bg-accent/10 px-4 py-2 rounded-xl border border-accent/20">
+                                                    <span className="text-xs font-bold text-accent uppercase tracking-widest">Total AI Score:</span>
+                                                    <span className="font-mono font-bold text-accent text-lg">{aiEvalSummary.grand_total_awarded} <span className="text-sm opacity-60">/ {aiEvalSummary.grand_total_max}</span></span>
+                                                </div>
+                                            )}
+                                            <Button variant="secondary" icon={FileDown} onClick={handleExport}>Export History</Button>
+                                        </div>
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-4 scrollbar-hide">
                                         {studentMessages.map((msg, i) => (
@@ -356,14 +457,44 @@ export const ManageAssessment: React.FC = () => {
                                                     <div className="relative group">
                                                         {msg.text}
                                                         {msg.role === 'user' && (
-                                                            <div className="mt-2 pt-2 border-t border-[#062e6f]/10 flex items-center">
+                                                            <div className="mt-2 pt-2 border-t border-[#062e6f]/10 flex flex-col gap-2">
                                                                 <button
                                                                     onClick={() => handleEditClick(msg)}
-                                                                    className="text-[10px] uppercase tracking-wider font-bold opacity-60 hover:opacity-100 flex items-center gap-1 transition-opacity"
+                                                                    className="text-[10px] uppercase tracking-wider font-bold opacity-60 hover:opacity-100 flex items-center gap-1 transition-opacity self-start"
                                                                 >
                                                                     <Pencil size={10} />
                                                                     Edit Response
                                                                 </button>
+                                                                
+                                                                {msg.ai_eval_results && (
+                                                                    <div className="mt-2 text-[#062e6f] bg-white/30 rounded-xl p-3 border border-white/40 shadow-sm">
+                                                                        <div className="flex justify-between items-center mb-2">
+                                                                            <span className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1">
+                                                                                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                                                                                AI Assessment
+                                                                            </span>
+                                                                            <span className="text-xs font-mono font-bold bg-[#062e6f]/10 px-2 py-0.5 rounded">
+                                                                                {msg.ai_eval_results.total_awarded} / {msg.ai_eval_results.total_max}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="flex flex-col gap-1 mb-2">
+                                                                            {msg.ai_eval_results.criteria_scores.map((cs, cIdx) => (
+                                                                                <div key={cIdx} className="flex justify-between text-xs py-0.5 items-start">
+                                                                                    <div className="flex flex-col">
+                                                                                        <span className="font-semibold">{cs.name}</span>
+                                                                                        {cs.remark && <span className="text-[10px] opacity-70 leading-tight">{cs.remark}</span>}
+                                                                                    </div>
+                                                                                    <span className="font-mono ml-2 whitespace-nowrap bg-white/40 px-1.5 rounded text-[10px]">{cs.awarded}/{cs.max_marks}</span>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                        {msg.ai_eval_results.overall_remark && (
+                                                                            <div className="text-[11px] leading-relaxed italic opacity-80 pt-2 border-t border-[#062e6f]/10">
+                                                                                "{msg.ai_eval_results.overall_remark}"
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         )}
                                                     </div>

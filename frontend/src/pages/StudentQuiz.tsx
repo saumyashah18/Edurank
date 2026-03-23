@@ -10,6 +10,55 @@ import {
 import { useLocation, useParams } from 'react-router-dom';
 import client, { api } from '../api/client';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
+import { useSpeechToText } from '../hooks/useSpeechToText';
+import 'mathlive';
+import { Keyboard } from 'lucide-react';
+
+declare global {
+    namespace JSX {
+        interface IntrinsicElements {
+            'math-field': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
+                class?: string;
+                onInput?: (e: any) => void;
+            };
+        }
+    }
+}
+
+declare module 'react' {
+    namespace JSX {
+        interface IntrinsicElements {
+            'math-field': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
+                class?: string;
+                onInput?: (e: any) => void;
+            };
+        }
+    }
+}
+
+const parseSpokenMath = (text: string) => {
+    let parsed = text;
+    const replacements = [
+        { regex: /\b(is equals to|is equal to|equals to|equal to|equals)\b/gi, replacement: '=' },
+        { regex: /\b(plus)\b/gi, replacement: '+' },
+        { regex: /\b(minus)\b/gi, replacement: '-' },
+        { regex: /\b(times|multiplied by|into)\b/gi, replacement: '*' },
+        { regex: /\b(divided by|over)\b/gi, replacement: '/' },
+        { regex: /\b(greater than or equal to)\b/gi, replacement: '>=' },
+        { regex: /\b(less than or equal to)\b/gi, replacement: '<=' },
+        { regex: /\b(greater than)\b/gi, replacement: '>' },
+        { regex: /\b(less than)\b/gi, replacement: '<' },
+        { regex: /\b(not equal to|is not equal to)\b/gi, replacement: '\\neq' },
+        { regex: /\b(squared)\b/gi, replacement: '^2' },
+        { regex: /\b(cubed)\b/gi, replacement: '^3' }
+    ];
+
+    replacements.forEach(({ regex, replacement }) => {
+        parsed = parsed.replace(regex, replacement);
+    });
+
+    return parsed;
+};
 
 export const StudentQuiz: React.FC = () => {
     const { quizId } = useParams();
@@ -24,6 +73,8 @@ export const StudentQuiz: React.FC = () => {
     const [seenIds, setSeenIds] = useState<number[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentQuestionId, setCurrentQuestionId] = useState<number | null>(null);
+    const [aiEvalSummary, setAiEvalSummary] = useState<any>(null);
+    const [loadingEval, setLoadingEval] = useState(false);
 
     // Voice State
     const [isProcessingAudio, setIsProcessingAudio] = useState(false);
@@ -32,31 +83,61 @@ export const StudentQuiz: React.FC = () => {
 
     const chatEndRef = React.useRef<HTMLDivElement>(null);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+    const mathfieldRef = React.useRef<any>(null);
 
-    // Audio Recorder Hook
-    const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+    const [isMathMode, setIsMathMode] = useState(false);
+
+    // Voice Hooks
+    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const { isRecording: isAudioRecording, startRecording, stopRecording } = useAudioRecorder();
+
+    const baseAnswerRef = useRef("");
+    const { isListening, startListening, stopListening: stopSTT } = useSpeechToText({
+        onResult: (text) => {
+            const prefix = baseAnswerRef.current.trim();
+            // Convert spoken words like "equals" and "plus" to actual math operators in math mode
+            const formattedText = isMathMode ? parseSpokenMath(text) : text;
+            setAnswer(prefix ? prefix + " " + formattedText : formattedText);
+        }
+    });
+
+    const isRecording = hasSpeechRecognition ? isListening : isAudioRecording;
 
     const handleVoiceInput = async () => {
-        if (isRecording) {
-            // Stop Recording & Process
-            setIsProcessingAudio(true);
-            try {
-                const audioBlob = await stopRecording();
-                const response = await api.transcribeAudio(audioBlob);
-                const transcribedText = response.data.user_text;
-
-                if (transcribedText) {
-                    setAnswer(prev => (prev ? prev + " " + transcribedText : transcribedText));
-                }
-            } catch (err) {
-                console.error("Transcription failed", err);
-                alert("Could not process voice input. Please try again.");
-            } finally {
-                setIsProcessingAudio(false);
+        if (hasSpeechRecognition) {
+            if (isListening) {
+                stopSTT();
+            } else {
+                baseAnswerRef.current = answer;
+                startListening();
             }
         } else {
-            // Start Recording
-            await startRecording();
+            if (isAudioRecording) {
+                // Stop Recording & Process fallback
+                setIsProcessingAudio(true);
+                try {
+                    const audioBlob = await stopRecording();
+                    const response = await api.transcribeAudio(audioBlob);
+                    const transcribedText = response.data.user_text;
+
+                    if (transcribedText) {
+                        setAnswer(prev => {
+                            const prefix = prev.trim();
+                            // Convert spoken words like "equals" and "plus" to actual math operators in math mode
+                            const formattedText = isMathMode ? parseSpokenMath(transcribedText) : transcribedText;
+                            return prefix ? prefix + " " + formattedText : formattedText;
+                        });
+                    }
+                } catch (err) {
+                    console.error("Transcription failed", err);
+                    alert("Could not process voice input. Please try again.");
+                } finally {
+                    setIsProcessingAudio(false);
+                }
+            } else {
+                // Start Recording fallback
+                await startRecording();
+            }
         }
     };
 
@@ -90,11 +171,29 @@ export const StudentQuiz: React.FC = () => {
     };
 
     useEffect(() => {
-        if (textareaRef.current) {
+        if (!isMathMode && textareaRef.current) {
             textareaRef.current.style.height = 'auto';
             textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
         }
-    }, [answer]);
+    }, [answer, isMathMode]);
+
+    useEffect(() => {
+        if (isMathMode && mathfieldRef.current) {
+            try {
+                mathfieldRef.current.setOptions({
+                    smartMode: true,
+                    mathModeSpace: '\\;'
+                });
+            } catch (e) {
+                // Ignore if options are unsupported in older mathlive
+            }
+
+            // Update mathfield content when answer changes externally (e.g. from speech)
+            if (mathfieldRef.current.value !== answer) {
+                mathfieldRef.current.value = answer;
+            }
+        }
+    }, [answer, isMathMode]);
 
     // Timer & Metadata state
     const [timeLeft, setTimeLeft] = useState<number | null>(null);
@@ -301,6 +400,26 @@ export const StudentQuiz: React.FC = () => {
         }
     };
 
+    useEffect(() => {
+        if (isFinished && studentInfo) {
+            fetchAiEvalSummary();
+        }
+    }, [isFinished]);
+
+    const fetchAiEvalSummary = async () => {
+        setLoadingEval(true);
+        try {
+            const { data } = await client.get(`/professor/quiz/${quizId}/student/${studentInfo?.enrollmentId}/ai-evaluation`);
+            if (data.enabled) {
+                setAiEvalSummary(data);
+            }
+        } catch (error) {
+            console.error("Failed to fetch AI evaluation summary", error);
+        } finally {
+            setLoadingEval(false);
+        }
+    };
+
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
@@ -318,7 +437,44 @@ export const StudentQuiz: React.FC = () => {
                     <p className="text-gray-400 max-w-md">
                         Thank you, {studentInfo?.name}. Your responses have been recorded and sent to your professor.
                     </p>
-                    <p className="text-gray-500 text-sm mt-4">
+
+                    {loadingEval ? (
+                        <div className="flex items-center gap-2 mt-4 text-accent">
+                            <Loader2 size={16} className="animate-spin" />
+                            <span className="text-sm">Fetching your evaluation...</span>
+                        </div>
+                    ) : aiEvalSummary ? (
+                        <div className="mt-8 bg-white/[0.03] border border-white/10 rounded-[24px] p-8 max-w-2xl w-full text-left">
+                            <div className="flex items-center justify-between mb-6 pb-6 border-b border-white/10">
+                                <h3 className="text-xl font-bold text-gray-100 flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />
+                                    AI Evaluation Summary
+                                </h3>
+                                <div className="text-right">
+                                    <span className="text-sm text-gray-400 uppercase tracking-widest font-bold">Total Score</span>
+                                    <div className="text-3xl font-mono font-bold text-accent">
+                                        {aiEvalSummary.grand_total_awarded} <span className="text-lg text-gray-500">/ {aiEvalSummary.grand_total_max}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-4">
+                                {aiEvalSummary.per_question.map((q: any, i: number) => (
+                                    <div key={i} className="bg-black/20 rounded-xl p-4 border border-white/5">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <h4 className="text-sm font-semibold text-gray-200">Q{q.question_number} Score</h4>
+                                            <span className="font-mono text-accent text-sm">{q.total_awarded}/{q.total_max}</span>
+                                        </div>
+                                        {q.overall_remark && (
+                                            <p className="text-xs text-gray-400 italic">"{q.overall_remark}"</p>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <p className="text-gray-500 text-sm mt-8">
                         You may now close this window safely.
                     </p>
                 </div>
@@ -430,22 +586,47 @@ export const StudentQuiz: React.FC = () => {
                                 onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
                                 className="flex gap-3 items-end"
                             >
-                                <textarea
-                                    ref={textareaRef}
-                                    value={answer}
-                                    onChange={e => setAnswer(e.target.value)}
-                                    placeholder={isRecording ? "Listening..." : isProcessingAudio ? "Processing voice..." : "Type your answer here..."}
-                                    disabled={loading || isSubmitting || isRecording || isProcessingAudio}
-                                    className={`flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-y-auto overflow-x-hidden min-h-[52px] max-h-[200px] custom-scrollbar ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
-                                    rows={1}
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter' && !e.shiftKey) {
-                                            e.preventDefault();
-                                            handleSubmit();
-                                        }
-                                    }}
-                                />
+                                {isMathMode ? (
+                                    <div className="flex-1 bg-white/[0.05] border border-accent/40 rounded-2xl px-4 py-3 min-h-[52px] shadow-inner font-mono text-lg overflow-x-auto overflow-y-hidden custom-scrollbar flex items-center">
+                                        <math-field
+                                            ref={mathfieldRef}
+                                            style={{ width: '100%', minWidth: 'min-content', outline: 'none', background: 'transparent', color: 'white', border: 'none', fontSize: '1.2rem' }}
+                                            onInput={(e: any) => setAnswer(e.target.value)}
+                                            onKeyDown={(e: any) => {
+                                                if (e.key === 'Enter' && !e.shiftKey) {
+                                                    e.preventDefault();
+                                                    handleSubmit();
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                ) : (
+                                    <textarea
+                                        ref={textareaRef}
+                                        value={answer}
+                                        onChange={e => setAnswer(e.target.value)}
+                                        placeholder={isRecording ? "Listening..." : isProcessingAudio ? "Processing voice..." : "Type your answer here..."}
+                                        disabled={loading || isSubmitting || isRecording || isProcessingAudio}
+                                        className={`flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-y-auto overflow-x-hidden min-h-[52px] max-h-[200px] custom-scrollbar ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
+                                        rows={1}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && !e.shiftKey) {
+                                                e.preventDefault();
+                                                handleSubmit();
+                                            }
+                                        }}
+                                    />
+                                )}
                                 <div className="flex gap-2 mb-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsMathMode(!isMathMode)}
+                                        className={`p-3 rounded-2xl transition-all ${isMathMode ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-white/[0.05] text-gray-400 hover:text-white hover:bg-white/10'}`}
+                                        title={isMathMode ? 'Switch to Normal Text' : 'Super Keyboard (Formulas)'}
+                                    >
+                                        <Keyboard size={20} />
+                                    </button>
+
                                     {/* Microphone Button */}
                                     <button
                                         type="button"
