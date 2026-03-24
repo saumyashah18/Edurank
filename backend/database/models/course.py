@@ -50,3 +50,15 @@ class Course(BaseModel):
     professor = relationship("User", backref="courses")
     chapters = relationship("Chapter", back_populates="course", cascade="all, delete-orphan")
     concepts = relationship("Concept", backref="course", cascade="all, delete-orphan")
+
+class Document(BaseModel):
+    __tablename__ = "documents"
+
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    filename = Column(String, nullable=False)
+    ingestion_status = Column(String, default=IngestionStatus.PENDING)
+    ingestion_error = Column(Text, nullable=True)
+    is_ingesting = Column(Boolean, default=False)
+    
+    course = relationship("Course", backref="documents")
+    chunks = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")

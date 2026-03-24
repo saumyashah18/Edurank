@@ -120,13 +120,13 @@ def get_professor_assessments(db: Session = Depends(get_db)):
 
 # --- Professor Endpoints ---
 
-def run_material_ingestion(course_id: int, file_path: str):
+def run_document_ingestion(course_id: int, document_id: int, file_path: str):
     """
     Background worker with retry logic and granular status tracking.
     Retries the full ingestion up to MAX_RETRIES times on failure.
-    Sets ingestion_error on Course with specific failure reason.
+    Sets ingestion_error on Document with specific failure reason.
     """
-    from ..database.models.course import Course, IngestionStatus
+    from ..database.models.course import Document, IngestionStatus
 
     MAX_RETRIES = 3
     RETRY_DELAY_SECONDS = 5
@@ -134,11 +134,11 @@ def run_material_ingestion(course_id: int, file_path: str):
     for attempt in range(1, MAX_RETRIES + 1):
         db = SessionLocal()
         try:
-            print(f"[Ingestion] Attempt {attempt}/{MAX_RETRIES} for course {course_id}, file: {file_path}")
+            print(f"[Ingestion] Attempt {attempt}/{MAX_RETRIES} for Document {document_id}, file: {file_path}")
             processor = MaterialProcessor(db)
             file_ext = file_path.lower().split(".")[-1] if "." in file_path else "pdf"
-            processor.process_material(course_id, file_path, file_ext)
-            print(f"[Ingestion] SUCCESS on attempt {attempt} for course {course_id}")
+            processor.process_material(course_id, document_id, file_path, file_ext)
+            print(f"[Ingestion] SUCCESS on attempt {attempt} for Document {document_id}")
             return  # Success — exit retry loop
 
         except Exception as e:
@@ -146,19 +146,19 @@ def run_material_ingestion(course_id: int, file_path: str):
             error_msg = str(e)
             print(f"[Ingestion] FAILED attempt {attempt}/{MAX_RETRIES}: {error_msg}")
 
-            # Update course status with attempt info
+            # Update document status with attempt info
             try:
-                course = db.query(Course).get(course_id)
-                if course:
+                doc = db.query(Document).get(document_id)
+                if doc:
                     if attempt < MAX_RETRIES:
-                        course.ingestion_status = IngestionStatus.EXTRACTING  # Will retry
-                        course.ingestion_error = f"Attempt {attempt} failed: {error_msg}. Retrying..."
+                        doc.ingestion_status = IngestionStatus.EXTRACTING  # Will retry
+                        doc.ingestion_error = f"Attempt {attempt} failed: {error_msg}. Retrying..."
                     else:
-                        course.ingestion_status = IngestionStatus.FAILED
-                        course.ingestion_error = f"All {MAX_RETRIES} attempts failed. Last error: {error_msg}"
+                        doc.ingestion_status = IngestionStatus.FAILED
+                        doc.ingestion_error = f"All {MAX_RETRIES} attempts failed. Last error: {error_msg}"
                     db.commit()
             except Exception as db_e:
-                print(f"[Ingestion] Could not update course status: {db_e}")
+                print(f"[Ingestion] Could not update Document status: {db_e}")
 
             if attempt < MAX_RETRIES:
                 import time
@@ -166,23 +166,23 @@ def run_material_ingestion(course_id: int, file_path: str):
         finally:
             db.close()
 
-def run_material_ingestion_locked(course_id: int, file_path: str):
-    """Wraps run_material_ingestion with ingestion lock release."""
+def run_document_ingestion_locked(course_id: int, document_id: int, file_path: str):
+    """Wraps run_document_ingestion with ingestion lock release."""
     try:
-        run_material_ingestion(course_id, file_path)
+        run_document_ingestion(course_id, document_id, file_path)
     finally:
         db = SessionLocal()
         try:
-            from ..database.models.course import Course
-            course = db.query(Course).get(course_id)
-            if course:
-                course.is_ingesting = False
+            from ..database.models.course import Document
+            doc = db.query(Document).get(document_id)
+            if doc:
+                doc.is_ingesting = False
                 db.commit()
-            print(f"[Ingestion] Lock released for course {course_id}")
+            print(f"[Ingestion] Lock released for Document {document_id}")
         except Exception as e:
-            print(f"[Ingestion] Could not release lock for course {course_id}: {e}")
+            print(f"[Ingestion] Could not release lock for Document {document_id}: {e}")
         finally:
-            db.close()
+            db.close()()
 
 @app.post("/professor/upload/{course_id}")
 async def upload_material(
@@ -191,24 +191,22 @@ async def upload_material(
     file: UploadFile = File(...), 
     db: Session = Depends(get_db)
 ):
-    """Uploads material and triggers hierarchical ingestion with locking."""
-    from ..database.models.course import Course, IngestionStatus
+    """Uploads material, saves it as a Document in the library, and triggers background ingestion."""
+    from ..database.models.course import Course, Document, IngestionStatus
 
-    # Course-level ingestion lock
     course = db.query(Course).get(course_id)
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if course.is_ingesting:
-        raise HTTPException(
-            status_code=409,
-            detail="This course is already being processed. Please wait for the current ingestion to complete."
-        )
 
-    # Acquire lock
-    course.is_ingesting = True
-    course.ingestion_status = IngestionStatus.PENDING
-    course.ingestion_error = None
+    new_doc = Document(
+        course_id=course_id,
+        filename=file.filename,
+        ingestion_status=IngestionStatus.PENDING,
+        is_ingesting=True
+    )
+    db.add(new_doc)
     db.commit()
+    db.refresh(new_doc)
 
     # Save file locally
     file_path = f"uploads/{file.filename}"
@@ -216,10 +214,10 @@ async def upload_material(
     with open(file_path, "wb") as f:
         f.write(await file.read())
     
-    print(f"[Upload] Triggering ingestion for course {course_id}, file: {file.filename}")
-    background_tasks.add_task(run_material_ingestion_locked, course_id, file_path)
+    print(f"[Upload] Triggering ingestion for Document {new_doc.id}, file: {file.filename}")
+    background_tasks.add_task(run_document_ingestion_locked, course_id, new_doc.id, file_path)
     
-    return {"status": "File uploaded. Processing in background.", "filename": file.filename}
+    return {"status": "File uploaded. Processing in background.", "filename": file.filename, "document_id": new_doc.id}
 
 
 
@@ -258,18 +256,50 @@ def trigger_generation(course_id: int, db: Session = Depends(get_db)):
     return {"status": "Generation request processed", "details": res}
 
 
-@app.get("/professor/ingestion-status/{course_id}")
-def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
-    """Fetch the progress status of material processing."""
-    from ..database.models.course import Course
-    course = db.query(Course).get(course_id)
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+@app.get("/professor/documents/{course_id}")
+def get_course_documents(course_id: int, db: Session = Depends(get_db)):
+    """Fetch all documents in the library for a course."""
+    from ..database.models.course import Document
+    docs = db.query(Document).filter_by(course_id=course_id).order_by(Document.id.desc()).all()
+    return [{
+        "id": d.id,
+        "filename": d.filename,
+        "status": d.ingestion_status or "PENDING",
+        "error": d.ingestion_error,
+        "created_at": d.created_at
+    } for d in docs]
+
+@app.get("/professor/document/{doc_id}/status")
+def get_document_status(doc_id: int, db: Session = Depends(get_db)):
+    """Fetch the progress status of material processing for a specific document."""
+    from ..database.models.course import Document
+    doc = db.query(Document).get(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
     return {
-        "status": course.ingestion_status or "PENDING",
-        "error": course.ingestion_error
+        "status": doc.ingestion_status or "PENDING",
+        "error": doc.ingestion_error
     }
 
+
+@app.delete("/professor/document/{doc_id}")
+def delete_document(doc_id: int, db: Session = Depends(get_db)):
+    """Deletes a document and all its associated fragments from the database."""
+    from ..database.models.course import Document
+    from ..database.models.chunk import Chunk
+    doc = db.query(Document).get(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        # Wipe vectors targeted to this document
+        db.query(Chunk).filter(Chunk.document_id == doc_id).delete(synchronize_session=False)
+        db.delete(doc)
+        db.commit()
+        return {"status": "Document deleted successfully."}
+    except Exception as e:
+        db.rollback()
+        print(f"[API ERROR] Failed to delete document: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete document from database")
 
 # --- Lazy-Loaded Singletons for Stability ---
 class AIServices:
@@ -360,21 +390,65 @@ def rank_question(question_id: int, interaction: str, db: Session = Depends(get_
     db.commit()
     return {"status": "Ranked", "upvotes": question.upvotes, "downvotes": question.downvotes}
 
+@app.get("/professor/quiz/draft/{course_id}")
+def get_quiz_draft(course_id: int, db: Session = Depends(get_db)):
+    """Fetch the latest unfinalized quiz (draft) for a course."""
+    quiz = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
+    if not quiz:
+        return {"draft": None}
+    return {
+        "draft": {
+            "id": quiz.id,
+            "title": quiz.title,
+            "description": quiz.description,
+            "duration_minutes": quiz.duration_minutes,
+            "total_marks": quiz.total_marks,
+            "total_questions": quiz.total_questions,
+            "instructions": quiz.instructions,
+            "allow_audio": quiz.allow_audio,
+            "ai_eval_enabled": quiz.ai_eval_enabled,
+            "ai_eval_rubric": quiz.ai_eval_rubric
+        }
+    }
+
+@app.post("/professor/quiz/draft/{course_id}")
+def save_quiz_draft(course_id: int, data: dict, db: Session = Depends(get_db)):
+    """Upserts a draft quiz for the course."""
+    quiz = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
+    
+    if not quiz:
+        quiz = Quiz(course_id=course_id, is_finalized=0)
+        db.add(quiz)
+        
+    quiz.title = data.get("title", quiz.title)
+    quiz.description = data.get("description", quiz.description)
+    quiz.duration_minutes = data.get("duration", quiz.duration_minutes)
+    quiz.total_marks = data.get("total_marks", quiz.total_marks)
+    quiz.total_questions = data.get("total_questions", quiz.total_questions)
+    quiz.instructions = data.get("instructions", quiz.instructions)
+    quiz.allow_audio = data.get("allow_audio", quiz.allow_audio)
+    quiz.ai_eval_enabled = data.get("ai_eval_enabled", quiz.ai_eval_enabled)
+    quiz.ai_eval_rubric = data.get("ai_eval_rubric", quiz.ai_eval_rubric)
+    
+    db.commit()
+    return {"status": "saved", "quiz_id": quiz.id}
+
 @app.post("/professor/quiz/create")
 def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: Optional[str] = None, allow_audio: bool = True, ai_eval_enabled: bool = False, ai_eval_rubric: Optional[str] = None, db: Session = Depends(get_db)):
-    """Saves the exam configuration including system instructions."""
-    quiz = Quiz(
-        course_id=course_id, 
-        title=title, 
-        duration_minutes=duration, 
-        total_marks=total_marks,
-        total_questions=total_questions,
-        instructions=instructions,
-        allow_audio=allow_audio,
-        ai_eval_enabled=ai_eval_enabled,
-        ai_eval_rubric=ai_eval_rubric
-    )
-    db.add(quiz)
+    """Saves or updates the exam configuration before generation."""
+    quiz = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
+    if not quiz:
+        quiz = Quiz(course_id=course_id, is_finalized=0)
+        db.add(quiz)
+        
+    quiz.title = title
+    quiz.duration_minutes = duration
+    quiz.total_marks = total_marks
+    quiz.total_questions = total_questions
+    quiz.instructions = instructions
+    quiz.allow_audio = allow_audio
+    quiz.ai_eval_enabled = ai_eval_enabled
+    quiz.ai_eval_rubric = ai_eval_rubric
     db.commit()
     return {"quiz_id": quiz.id}
 

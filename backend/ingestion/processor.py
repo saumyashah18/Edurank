@@ -17,54 +17,56 @@ class MaterialProcessor:
     #  STATUS HELPERS
     # ------------------------------------------------------------------
 
-    def _set_status(self, course: Course, status: str):
+    def _set_status(self, document, status: str):
         """Update ingestion status and commit so the professor sees live progress."""
-        course.ingestion_status = status
+        document.ingestion_status = status
         self.db.commit()
 
-    def _fail(self, course: Course, message: str):
-        """Mark course as FAILED with a human-readable error message."""
-        course.ingestion_status = IngestionStatus.FAILED
-        course.ingestion_error = message
+    def _fail(self, document, message: str):
+        """Mark Document as FAILED with a human-readable error message."""
+        from ..database.models.course import IngestionStatus
+        document.ingestion_status = IngestionStatus.FAILED
+        document.ingestion_error = message
         self.db.commit()
 
     # ------------------------------------------------------------------
     #  MAIN ENTRY POINT
     # ------------------------------------------------------------------
 
-    def process_material(self, course_id: int, file_path: str, file_type: str):
+    def process_material(self, course_id: int, document_id: int, file_path: str, file_type: str):
         """
         Main entry point for processing a study material.
         Stages: VALIDATING → EXTRACTING → (OCR_PROCESSING) → CHUNKING → EMBEDDING → COMPLETED
         """
         import time
+        from ..database.models.course import Document
         start_time = time.time()
         print(f"\n{'#'*60}")
         print(f"### [INGESTION ENGINE] Processing: {os.path.basename(file_path)}")
         print(f"{'#'*60}")
 
-        course = self.db.query(Course).get(course_id)
-        if not course:
-            print(f"[!] INGESTION ABORTED: Course {course_id} not found.")
+        document = self.db.query(Document).get(document_id)
+        if not document:
+            print(f"[!] INGESTION ABORTED: Document {document_id} not found.")
             return
 
         # Clear any previous error
-        course.ingestion_error = None
+        document.ingestion_error = None
 
         try:
             # ── STAGE 1: VALIDATION ──
-            self._set_status(course, IngestionStatus.VALIDATING)
+            self._set_status(document, IngestionStatus.VALIDATING)
             validation_error = self._validate_file(file_path)
             if validation_error:
-                self._fail(course, validation_error)
+                self._fail(document, validation_error)
                 print(f"[!] VALIDATION FAILED: {validation_error}")
                 return
 
             # ── STAGE 2: MIME DETECTION & EXTRACTION ──
-            self._set_status(course, IngestionStatus.EXTRACTING)
+            self._set_status(document, IngestionStatus.EXTRACTING)
 
-            # Clear stale data before re-ingesting
-            self.clear_course_data(course_id)
+            # NOTE: Removed `self.clear_course_data(course_id)` to allow multiple documents
+            # to be ingested into the same course simultaneously.
 
             mime_type = self._detect_mime_type(file_path)
             print(f"[*] Detected MIME type: {mime_type}")
@@ -72,11 +74,11 @@ class MaterialProcessor:
             extracted_text: Optional[str]
             extracted_data: Optional[List[Dict[str, Any]]]
             extracted_text, extracted_data = self._dispatch_extraction(
-                file_path, mime_type, course
+                file_path, mime_type, document
             )
 
             if extracted_data is None and not extracted_text:
-                self._fail(course, f"No content could be extracted from the file.")
+                self._fail(document, f"No content could be extracted from the file.")
                 return
 
             # If we got flat text but no hierarchy, wrap it into a default structure
@@ -84,12 +86,12 @@ class MaterialProcessor:
                 extracted_data = self._text_to_hierarchy(extracted_text, file_path)
 
             if not extracted_data:
-                self._fail(course, "Extraction produced no usable content.")
+                self._fail(document, "Extraction produced no usable content.")
                 return
 
             # ── STAGE 3: CHUNKING + EMBEDDING (inside _store_hierarchy) ──
-            self._set_status(course, IngestionStatus.CHUNKING)
-            self._store_hierarchy(course_id, extracted_data, course)
+            self._set_status(document, IngestionStatus.CHUNKING)
+            self._store_hierarchy(course_id, extracted_data, document)
 
             # ── DONE ──
             duration = time.time() - start_time
@@ -103,9 +105,10 @@ class MaterialProcessor:
 
         except Exception as e:
             self.db.rollback()
-            course = self.db.query(Course).get(course_id)
-            if course:
-                self._fail(course, str(e))
+            from ..database.models.course import Document
+            document = self.db.query(Document).get(document_id)
+            if document:
+                self._fail(document, str(e))
             print(f"\n❌ [FATAL ERROR] Ingestion Pipeline Failed: {e}")
 
     # ------------------------------------------------------------------
@@ -174,7 +177,7 @@ class MaterialProcessor:
             return fallback_map.get(ext, "application/octet-stream")
 
     def _dispatch_extraction(
-        self, file_path: str, mime_type: str, course: Course
+        self, file_path: str, mime_type: str, document
     ) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
         """
         Routes to the correct extraction handler based on MIME type.
@@ -191,24 +194,24 @@ class MaterialProcessor:
 
         handler = MIME_HANDLERS.get(mime_type)
         if handler is None:
-            self._fail(course, f"Unsupported file type: {mime_type}")
+            self._fail(document, f"Unsupported file type: {mime_type}")
             return None, None
 
         # Image and TXT handlers return flat text
         if mime_type.startswith("image/") or mime_type == "text/plain":
-            self._set_status(course, IngestionStatus.OCR_PROCESSING if mime_type.startswith("image/") else IngestionStatus.EXTRACTING)
-            text: str = handler(file_path, course)
+            self._set_status(document, IngestionStatus.OCR_PROCESSING if mime_type.startswith("image/") else IngestionStatus.EXTRACTING)
+            text: str = handler(file_path, document)
             return text, None
 
         # PDF/DOCX handlers return hierarchy data
-        hierarchy: List[Dict[str, Any]] = handler(file_path, course)
+        hierarchy: List[Dict[str, Any]] = handler(file_path, document)
         return None, hierarchy
 
     # ------------------------------------------------------------------
     #  PDF EXTRACTION (with per-page OCR for scanned pages)
     # ------------------------------------------------------------------
 
-    def _extract_pdf(self, file_path: str, course: Course) -> List[Dict[str, Any]]:
+    def _extract_pdf(self, file_path: str, document) -> List[Dict[str, Any]]:
         """
         Improved PDF extraction with per-page scanned detection and OCR.
         """
@@ -219,12 +222,12 @@ class MaterialProcessor:
         try:
             doc = fitz.open(file_path)
         except Exception as e:
-            self._fail(course, f"Failed to open PDF: {e}")
+            self._fail(document, f"Failed to open PDF: {e}")
             return []
 
         if doc.is_encrypted and not doc.authenticate(""):
             doc.close()
-            self._fail(course, "PDF is password-protected")
+            self._fail(document, "PDF is password-protected")
             return []
 
         total_pages = len(doc)
@@ -443,7 +446,7 @@ class MaterialProcessor:
     #  TXT EXTRACTION
     # ------------------------------------------------------------------
 
-    def _extract_txt(self, file_path: str, course: Course) -> str:
+    def _extract_txt(self, file_path: str, document) -> str:
         """Reads a plain text file and returns its content."""
         print(f"[*] Extracting plain text from: {os.path.basename(file_path)}")
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -455,7 +458,7 @@ class MaterialProcessor:
     #  IMAGE OCR EXTRACTION
     # ------------------------------------------------------------------
 
-    def _extract_image(self, file_path: str, course: Course) -> str:
+    def _extract_image(self, file_path: str, document) -> str:
         """
         Extracts text from an image using pytesseract OCR.
         Preprocesses: grayscale + sharpen.
@@ -464,7 +467,7 @@ class MaterialProcessor:
         from PIL import Image, ImageFilter
 
         print(f"[*] Image OCR: {os.path.basename(file_path)}")
-        self._set_status(course, IngestionStatus.OCR_PROCESSING)
+        self._set_status(document, IngestionStatus.OCR_PROCESSING)
 
         img = Image.open(file_path)
         img = img.convert("L")  # Grayscale
@@ -474,7 +477,7 @@ class MaterialProcessor:
         print(f"    -> OCR extracted {len(text)} characters")
 
         if not text.strip():
-            self._fail(course, "OCR could not extract any text from the image.")
+            self._fail(document, "OCR could not extract any text from the image.")
             return ""
 
         return text
@@ -514,7 +517,7 @@ class MaterialProcessor:
     #  STORE HIERARCHY (preserved from original — only status tracking added)
     # ------------------------------------------------------------------
 
-    def _store_hierarchy(self, course_id: int, hierarchy_data: List[Dict[str, Any]], course: Optional[Course] = None):
+    def _store_hierarchy(self, course_id: int, hierarchy_data: List[Dict[str, Any]], document=None):
         """Saves the detected hierarchy to the database and triggers RAG updates."""
         from .chunking import Chunker
         from ..rag.embedder import Embedder
@@ -549,14 +552,14 @@ class MaterialProcessor:
                         print(f"    - Processing {subsection.title}...")
 
                         # CHUNKING stage
-                        if course:
-                            self._set_status(course, IngestionStatus.CHUNKING)
-                        chunker.generate_chunks(subsection.id)
+                        if document:
+                            self._set_status(document, IngestionStatus.CHUNKING)
+                        chunker.generate_chunks(subsection.id, document_id=document.id if document else None)
 
                         # EMBEDDING stage
                         print(f"    - Indexing {subsection.title} in pgvector...")
-                        if course:
-                            self._set_status(course, IngestionStatus.EMBEDDING)
+                        if document:
+                            self._set_status(document, IngestionStatus.EMBEDDING)
                         try:
                             embedder.embed_chunks(subsection.id)
                         except Exception as ee:
@@ -574,8 +577,8 @@ class MaterialProcessor:
                         raise sub_e
 
         # Signal that basic ingestion is complete
-        if course:
-            self._set_status(course, IngestionStatus.COMPLETED)
+        if document:
+            self._set_status(document, IngestionStatus.COMPLETED)
             self.db.commit()
 
         # Run concept extraction in background thread
@@ -583,7 +586,7 @@ class MaterialProcessor:
             import threading
             t = threading.Thread(
                 target=self._run_concept_extraction_background,
-                args=(course_id, _concept_extraction_queue, course.id),
+                args=(course_id, _concept_extraction_queue, document.id if document else None),
                 daemon=True
             )
             t.start()
@@ -594,25 +597,25 @@ class MaterialProcessor:
         self,
         course_id: int,
         subsection_ids: List[int],
-        course_db_id: int
+        document_id: int
     ):
         """
         Runs concept extraction in a background thread.
         Uses a FRESH database session — never shares session
         with the main ingestion thread.
-        Sets course status to CONCEPT_EXTRACTION while running,
+        Sets Document status to CONCEPT_EXTRACTION while running,
         FULLY_READY when done, FAILED if it errors.
         """
         from ..database.session import SessionLocal
-        from ..database.models.course import Course, IngestionStatus
+        from ..database.models.course import Document, IngestionStatus
         from .concept_extractor import ConceptExtractor
 
         db = SessionLocal()
         try:
             # Update status to CONCEPT_EXTRACTION
-            course = db.query(Course).get(course_db_id)
-            if course:
-                course.ingestion_status = IngestionStatus.CONCEPT_EXTRACTION
+            document = db.query(Document).get(document_id)
+            if document:
+                document.ingestion_status = IngestionStatus.CONCEPT_EXTRACTION
                 db.commit()
 
             extractor = ConceptExtractor(db)
@@ -629,20 +632,20 @@ class MaterialProcessor:
                     continue  # Skip failed subsection, keep going
 
             # All done
-            course = db.query(Course).get(course_db_id)
-            if course:
-                course.ingestion_status = IngestionStatus.FULLY_READY
+            document = db.query(Document).get(document_id)
+            if document:
+                document.ingestion_status = IngestionStatus.FULLY_READY
                 db.commit()
             print(f"[ConceptBG] Concept extraction complete "
-                  f"for course {course_id}")
+                  f"for Document {document_id}")
 
         except Exception as e:
             print(f"[ConceptBG] Fatal background error: {e}")
             try:
-                course = db.query(Course).get(course_db_id)
-                if course:
-                    course.ingestion_status = IngestionStatus.FAILED
-                    course.ingestion_error = (
+                document = db.query(Document).get(document_id)
+                if document:
+                    document.ingestion_status = IngestionStatus.FAILED
+                    document.ingestion_error = (
                         f"Concept extraction failed: {str(e)}"
                     )
                     db.commit()

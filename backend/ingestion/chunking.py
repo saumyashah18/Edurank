@@ -55,7 +55,7 @@ class Chunker:
     #  MAIN ENTRY POINT (existing signature preserved)
     # ------------------------------------------------------------------
 
-    def generate_chunks(self, subsection_id: int):
+    def generate_chunks(self, subsection_id: int, document_id: int):
         """
         Refined sequence:
         1. Hierarchy exists (Subsection -> RawMaterial).
@@ -85,18 +85,18 @@ class Chunker:
         refined_paragraphs = self._semantic_merge(paragraphs)
         print(f"      -> SUCCESS: Refined into {len(refined_paragraphs)} meaningful explanations (M chunks)")
 
-        # Step 3: Multi-Granularity Derivation
+        # Multi-Granularity Derivation
         print(f"[3/3] Committing Multi-Granularity Index (S, M, L) to DB...")
 
         # Small (S) = Token-limited paragraphs with overlap
-        small_chunks = self._add_overlap(paragraphs)
-        self._create_chunks(subsection_id, small_chunks, ChunkType.SMALL, course_id=course_id)
+        small_chunks = self._add_overlap(small_paragraphs)
+        self._create_chunks(subsection_id, small_chunks, ChunkType.SMALL, course_id=course_id, document_id=document_id)
 
         # Medium (M) = Refined (merged) paragraphs
-        self._create_chunks(subsection_id, refined_paragraphs, ChunkType.MEDIUM, course_id=course_id)
+        self._create_chunks(subsection_id, refined_paragraphs, ChunkType.MEDIUM, course_id=course_id, document_id=document_id)
 
         # Large (L) = Concept scope (Full text)
-        self._create_l_chunk(subsection_id, raw_material.content, course_id=course_id)
+        self._create_l_chunk(subsection_id, raw_material.content, course_id=course_id, document_id=document_id)
 
         self.db.commit()
         print(f"{'='*20} CHUNKING COMPLETE {'='*24}\n")
@@ -165,9 +165,9 @@ class Chunker:
 
         print(f"[STRUCTURED] {len(small_chunks)} SMALL, {len(medium_chunks)} MEDIUM, 1 LARGE")
 
-        self._create_chunks(subsection_id, small_chunks, ChunkType.SMALL, course_id=course_id)
-        self._create_chunks(subsection_id, medium_chunks, ChunkType.MEDIUM, course_id=course_id)
-        self._create_l_chunk(subsection_id, full_text, course_id=course_id)
+        self._create_chunks(subsection_id, small_chunks, ChunkType.SMALL, course_id=course_id, document_id=document_id)
+        self._create_chunks(subsection_id, medium_chunks, ChunkType.MEDIUM, course_id=course_id, document_id=document_id)
+        self._create_l_chunk(subsection_id, full_text, course_id=course_id, document_id=document_id)
 
         self.db.commit()
         print(f"{'='*20} STRUCTURED CHUNKING COMPLETE {'='*14}\n")
@@ -300,21 +300,23 @@ class Chunker:
     #  PERSISTENCE (preserved)
     # ------------------------------------------------------------------
 
-    def _create_chunks(self, subsection_id: int, text_list: List[str], chunk_type: ChunkType, course_id: Optional[int] = None):
+    def _create_chunks(self, subsection_id: int, text_list: List[str], chunk_type: ChunkType, course_id: Optional[int] = None, document_id: Optional[int] = None):
         for text in text_list:
             chunk = Chunk(
                 content=text,
                 chunk_type=chunk_type,
                 subsection_id=subsection_id,
-                course_id=course_id
+                course_id=course_id,
+                document_id=document_id
             )
             self.db.add(chunk)
 
-    def _create_l_chunk(self, subsection_id: int, full_text: str, course_id: Optional[int] = None):
+    def _create_l_chunk(self, subsection_id: int, full_text: str, course_id: Optional[int] = None, document_id: Optional[int] = None):
         chunk = Chunk(
             content=full_text,
             chunk_type=ChunkType.LARGE,
             subsection_id=subsection_id,
-            course_id=course_id
+            course_id=course_id,
+            document_id=document_id
         )
         self.db.add(chunk)

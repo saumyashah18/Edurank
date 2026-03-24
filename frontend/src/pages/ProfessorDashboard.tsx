@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-    FileText,
+    FileText, Trash2,
     RefreshCw, Lock,
     ThumbsUp, ThumbsDown, Copy, Mic, MicOff, Infinity, Pencil,
     Check, Globe, Loader2
@@ -14,9 +14,12 @@ import { copyToClipboard } from '../utils/clipboard';
 import { useSpeechToText } from '../hooks/useSpeechToText';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 
-interface FileUpload {
-    name: string;
-    status: 'uploading' | 'ready' | 'failed';
+interface LibraryDocument {
+    id: number;
+    filename: string;
+    status: string;
+    error: string | null;
+    created_at: string;
 }
 
 interface ChatMessage {
@@ -33,7 +36,7 @@ export const ProfessorDashboard: React.FC = () => {
     const [examDesc, setExamDesc] = useState('');
     const [instructions, setInstructions] = useState('');
     const [duration, setDuration] = useState(60);
-    const [marks] = useState(100);
+    const [marks, setMarks] = useState(100);
     const [questionLimit, setQuestionLimit] = useState<'specific' | 'infinite'>('specific');
     const [questionCount, setQuestionCount] = useState(10);
     const { user } = useAuth();
@@ -74,7 +77,7 @@ export const ProfessorDashboard: React.FC = () => {
         setEditingMessageId(null);
     };
 
-    const [files, setFiles] = useState<FileUpload[]>([]);
+    const [libraryDocs, setLibraryDocs] = useState<LibraryDocument[]>([]);
     const [messages, setMessages] = useState<ChatMessage[]>([
         { id: '1', role: 'bot', text: `✨ Welcome Professor ${user?.displayName || ''}! Upload your syllabus to start the simulation...` }
     ]);
@@ -147,39 +150,117 @@ export const ProfessorDashboard: React.FC = () => {
         }
     }, [inputMessage]);
 
-    const [ingestionStatus, setIngestionStatus] = useState<'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'>('PENDING');
 
-    // Check ingestion status on page load (in case it was already completed before refresh)
+
+    const isFirstRender = useRef(true);
+
+    // Fetch draft on mount
     useEffect(() => {
         (async () => {
             try {
-                const { data } = await client.get('/professor/ingestion-status/1');
-                setIngestionStatus(data.status);
+                const { data } = await client.get('/professor/quiz/draft/1');
+                if (data.draft) {
+                    setExamName(data.draft.title || "");
+                    setExamDesc(data.draft.description || "");
+                    setDuration(data.draft.duration_minutes || 60);
+                    setMarks(data.draft.total_marks || 100);
+                    if (data.draft.total_questions === -1) {
+                        setQuestionLimit('infinite');
+                    } else {
+                        setQuestionLimit('specific');
+                        setQuestionCount(data.draft.total_questions || 5);
+                    }
+                    setInstructions(data.draft.instructions || "");
+                    setAllowAudio(data.draft.allow_audio ?? true);
+                    setAiEvalEnabled(data.draft.ai_eval_enabled ?? false);
+                    if (data.draft.ai_eval_rubric) {
+                        try {
+                            const parsed = JSON.parse(data.draft.ai_eval_rubric);
+                            if (parsed.criteria) {
+                                setRubricCriteria(parsed.criteria.map((c: any) => ({
+                                    id: Math.random().toString(),
+                                    name: c.name,
+                                    marks: c.marks
+                                })));
+                            }
+                        } catch (e) {
+                            console.error("Failed to parse rubric draft", e);
+                        }
+                    }
+                    if (data.draft.id) setCurrentQuizId(data.draft.id);
+                }
             } catch (err) {
-                // Ignore — course may not exist yet
+                console.error("Failed to load draft", err);
             }
         })();
+    }, []);
+
+    // Autosave draft
+    useEffect(() => {
+        if (isFirstRender.current) {
+            isFirstRender.current = false;
+            return;
+        }
+
+        const timeout = setTimeout(async () => {
+            if (!examName && !instructions) return; // Don't aggressively save completely empty drafts
+            try {
+                let rubricJson = undefined;
+                if (aiEvalEnabled && rubricCriteria.length > 0) {
+                    rubricJson = JSON.stringify({
+                        total_marks: effectiveMarks,
+                        criteria: rubricCriteria.map(c => ({ name: c.name, marks: Number(c.marks) }))
+                    });
+                }
+                
+                await client.post('/professor/quiz/draft/1', {
+                    title: examName,
+                    description: examDesc,
+                    duration_minutes: duration,
+                    total_marks: effectiveMarks,
+                    total_questions: questionLimit === 'infinite' ? -1 : questionCount,
+                    instructions,
+                    allow_audio: allowAudio,
+                    ai_eval_enabled: aiEvalEnabled,
+                    ai_eval_rubric: rubricJson
+                });
+            } catch (error) {
+                console.error("Failed to auto-save draft", error);
+            }
+        }, 1500);
+
+        return () => clearTimeout(timeout);
+    }, [examName, examDesc, duration, marks, questionLimit, questionCount, instructions, allowAudio, aiEvalEnabled, rubricCriteria, effectiveMarks]);
+
+    const fetchLibrary = async () => {
+        try {
+            const { data } = await client.get('/professor/documents/1');
+            setLibraryDocs(data);
+        } catch (err) {
+            console.error("Failed to load library", err);
+        }
+    };
+
+    // Check library docs on page load and poll
+    useEffect(() => {
+        fetchLibrary();
+
+        const interval = setInterval(() => {
+            setLibraryDocs(prev => {
+                const needsPolling = prev.some(d => d.status !== 'FULLY_READY' && d.status !== 'FAILED');
+                if (needsPolling) {
+                    fetchLibrary();
+                }
+                return prev;
+            });
+        }, 3000);
+        return () => clearInterval(interval);
     }, []);
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, isTyping]);
 
-    useEffect(() => {
-        let interval: any;
-        if (files.some(f => f.status === 'ready') && ingestionStatus !== 'COMPLETED' && ingestionStatus !== 'FAILED') {
-            interval = setInterval(async () => {
-                try {
-                    const { data } = await client.get('/professor/ingestion-status/1');
-                    setIngestionStatus(data.status);
-                    if (data.status === 'COMPLETED' || data.status === 'FAILED') clearInterval(interval);
-                } catch (err) {
-                    console.error("Polling failed", err);
-                }
-            }, 3000);
-        }
-        return () => clearInterval(interval);
-    }, [files, ingestionStatus]);
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFiles = e.target.files;
@@ -187,21 +268,48 @@ export const ProfessorDashboard: React.FC = () => {
 
         for (let i = 0; i < selectedFiles.length; i++) {
             const file = selectedFiles[i];
-            const newFile: FileUpload = { name: file.name, status: 'uploading' };
-            setFiles(prev => [...prev, newFile]);
+            
+            // Optimistic UI add
+            const tempId = Date.now() + i;
+            setLibraryDocs(prev => [{
+                id: tempId,
+                filename: file.name,
+                status: 'PENDING',
+                error: null,
+                created_at: new Date().toISOString()
+            }, ...prev]);
 
             const formData = new FormData();
             formData.append('file', file);
 
             try {
-                // Upload using the normal client
                 await client.post(`/professor/upload/1`, formData, {
                     headers: { 'Content-Type': 'multipart/form-data' }
                 });
-                setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'ready' } : f));
-            } catch (err) {
-                setFiles(prev => prev.map(f => f.name === file.name ? { ...f, status: 'failed' } : f));
+                fetchLibrary();
+            } catch (err: any) {
+                console.error(err);
+                alert(err.response?.data?.detail || "Upload failed");
+                fetchLibrary();
             }
+        }
+        
+        // Reset input so the same file can be uploaded again if needed
+        if (fileInputRef.current) fileInputRef.current.value = "";
+    };
+
+    const handleDeleteDocument = async (docId: number, filename: string) => {
+        if (!window.confirm(`Are you sure you want to delete "${filename}"? All associated knowledge chunks will be destroyed.`)) return;
+
+        try {
+            // Optimistic delete
+            setLibraryDocs(prev => prev.filter(d => d.id !== docId));
+            await client.delete(`/professor/document/${docId}`);
+            fetchLibrary();
+        } catch (err: any) {
+            console.error("Failed to delete document", err);
+            alert(err.response?.data?.detail || "Failed to delete document.");
+            fetchLibrary();
         }
     };
 
@@ -456,44 +564,81 @@ export const ProfessorDashboard: React.FC = () => {
                 </div>
 
                 <div className="flex flex-col gap-2">
-                    <label className="text-sm font-medium text-gray-200">Knowledge</label>
-                    {files.filter(f => f.status === 'ready').length === 0 && (
+                    <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium text-gray-200">Knowledge Library</label>
+                        <button onClick={() => fileInputRef.current?.click()} className="text-xs text-accent hover:text-white transition-colors">
+                            + Upload
+                        </button>
+                    </div>
+                    <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" multiple />
+                    
+                    {libraryDocs.length === 0 ? (
                         <div
                             onClick={() => fileInputRef.current?.click()}
-                            className="border border-border border-dashed rounded-2xl p-6 flex items-center justify-between bg-white/[0.02] hover:bg-white/[0.04] cursor-pointer transition-colors"
+                            className="border border-border border-dashed rounded-2xl p-6 flex flex-col items-center justify-center bg-white/[0.02] hover:bg-white/[0.04] cursor-pointer transition-colors"
                         >
-                            <span className="text-sm text-gray-400">Add files to reference</span>
-                            <div className="w-8 h-8 rounded-full border border-border flex items-center justify-center text-xl text-gray-200">+</div>
-                            <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" multiple />
+                            <span className="text-sm text-gray-400">Your library is empty.</span>
+                            <span className="text-xs text-gray-500 mt-1">Upload files to build your knowledge base.</span>
                         </div>
+                    ) : (
+                        <ul className="flex flex-col gap-2 mt-2 max-h-[250px] overflow-y-auto pr-2 custom-scrollbar">
+                            {libraryDocs.map((doc, idx) => {
+                                let statusUI = <span className="text-gray-400 text-xs text-right">Waiting...</span>;
+                                
+                                if (doc.status === 'FAILED') {
+                                    statusUI = (
+                                        <div className="flex flex-col items-end">
+                                            <span className="text-red-400 font-bold text-xs">❌ Failed</span>
+                                            {doc.error && <span className="text-[10px] text-red-400/70 max-w-[200px] text-right truncate" title={doc.error}>{doc.error}</span>}
+                                        </div>
+                                    );
+                                } else if (doc.status === 'COMPLETED') {
+                                    statusUI = (
+                                        <div className="flex flex-col items-end">
+                                            <span className="text-green-400 text-xs">✅ Ready</span>
+                                            <span className="text-[10px] text-gray-400 font-normal mt-0.5">Extracting Concepts (Bg)</span>
+                                        </div>
+                                    );
+                                } else if (doc.status === 'CONCEPT_EXTRACTION') {
+                                    statusUI = <span className="text-blue-400 animate-pulse text-xs text-right">⚙️ Extracting...</span>;
+                                } else if (doc.status === 'FULLY_READY') {
+                                    statusUI = <span className="text-green-400 font-bold text-xs text-right">🌟 Fully Optimised</span>;
+                                } else if (doc.status !== 'PENDING') {
+                                    const phase = doc.status.toLowerCase().replace('_', ' ');
+                                    statusUI = <span className="text-accent animate-pulse text-xs text-right">⏳ Processing ({phase})</span>;
+                                }
+
+                                return (
+                                    <li key={doc.id || idx} className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors">
+                                        <div className="flex items-center gap-3 overflow-hidden">
+                                            <FileText size={18} className="text-accent shrink-0" />
+                                            <span className="text-sm text-gray-200 truncate pr-4">{doc.filename}</span>
+                                        </div>
+                                        <div className="shrink-0 ml-4 flex items-center justify-end gap-3">
+                                            {statusUI}
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); handleDeleteDocument(doc.id, doc.filename); }}
+                                                className="p-1.5 text-red-400 opacity-50 hover:opacity-100 hover:bg-red-400/20 rounded-md transition-all"
+                                                title="Delete document"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    </li>
+                                );
+                            })}
+                        </ul>
                     )}
-                    <ul className="flex flex-col gap-2 mt-2">
-                        {files.map((file, idx) => (
-                            <li key={idx} className="flex items-center justify-between text-sm py-1">
-                                <div className="flex items-center gap-2 text-gray-300">
-                                    <FileText size={16} />
-                                    {file.name}
-                                </div>
-                                {file.status === 'uploading' ? (
-                                    <span className="text-accent animate-pulse">Uploading...</span>
-                                ) : file.status === 'ready' ? (
-                                    <span className="text-green-400">✅ Ready</span>
-                                ) : (
-                                    <span className="text-red-400">❌ Failed</span>
-                                )}
-                            </li>
-                        ))}
-                    </ul>
                 </div>
 
                 <Button
                     onClick={handleGenerate}
                     loading={isGenerating}
-                    disabled={ingestionStatus !== 'COMPLETED'}
+                    disabled={libraryDocs.length === 0 || libraryDocs.some(d => ['PENDING', 'VALIDATING', 'EXTRACTING', 'OCR_PROCESSING', 'CHUNKING', 'EMBEDDING'].includes(d.status))}
                     icon={RefreshCw}
                     className="mt-4"
                 >
-                    {isGenerating ? 'AI is generating...' : ingestionStatus === 'PROCESSING' ? 'Processing Docs...' : 'Generate Questions'}
+                    {isGenerating ? 'AI is generating...' : libraryDocs.some(d => ['PENDING', 'VALIDATING', 'EXTRACTING', 'OCR_PROCESSING', 'CHUNKING', 'EMBEDDING'].includes(d.status)) ? 'Processing Docs...' : 'Generate Questions'}
                 </Button>
             </aside>
 

@@ -325,12 +325,29 @@ export const StudentQuiz: React.FC = () => {
 
         setIsSubmitting(true);
         try {
-            await client.post(`/student/quiz/${quizId}/submit`, {
+            const res = await client.post(`/student/quiz/${quizId}/submit`, {
                 question_id: currentQuestionId,
                 answer: userMsgText,
                 student_name: studentInfo.name,
                 enrollment_id: studentInfo.enrollmentId
             });
+
+            if (res.data?.hint || res.data?.misconception || res.data?.recommended_action) {
+                let aiFeedback = "";
+                if (res.data.misconception) aiFeedback += `💡 **Correction:** ${res.data.misconception}\n\n`;
+                if (res.data.hint) aiFeedback += `🔍 **Hint:** ${res.data.hint}\n\n`;
+                if (res.data.recommended_action) aiFeedback += `🎯 **Suggestion:** ${res.data.recommended_action}`;
+                
+                if (aiFeedback.trim()) {
+                    setMessages(prev => [...prev, {
+                        id: Date.now().toString() + "-feedback",
+                        role: 'bot',
+                        text: aiFeedback.trim(),
+                        context: "Immediate Feedback"
+                    }]);
+                    await new Promise(r => setTimeout(r, 1500));
+                }
+            }
 
             const timeRemaining = timeLeftRef.current;
             const reachedQuestionLimit = totalQuestionsLimit > 0 && currentQuestionIdx >= totalQuestionsLimit;
@@ -421,7 +438,21 @@ export const StudentQuiz: React.FC = () => {
                                             <span className="font-mono text-accent text-sm">{q.total_awarded}/{q.total_max}</span>
                                         </div>
                                         {q.overall_remark && (
-                                            <p className="text-xs text-gray-400 italic">"{q.overall_remark}"</p>
+                                            <p className="text-xs text-gray-400 italic mb-3">"{q.overall_remark}"</p>
+                                        )}
+                                        {q.criteria_scores && q.criteria_scores.length > 0 && (
+                                            <div className="mt-3 pt-3 border-t border-white/10 flex flex-col gap-2">
+                                                <h5 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-1">Rubric Details</h5>
+                                                {q.criteria_scores.map((cs: any, idx: number) => (
+                                                    <div key={idx} className="flex flex-col gap-1">
+                                                        <div className="flex justify-between items-center">
+                                                            <span className="text-xs text-gray-300 font-medium">{cs.name}</span>
+                                                            <span className="text-xs font-mono text-accent">{cs.awarded}/{cs.max_marks}</span>
+                                                        </div>
+                                                        {cs.remark && <span className="text-[10px] text-gray-500">{cs.remark}</span>}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         )}
                                     </div>
                                 ))}

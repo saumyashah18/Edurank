@@ -124,8 +124,10 @@ class RAGService:
             LEFT JOIN subsections sub ON c.subsection_id = sub.id
             LEFT JOIN sections sec ON sub.section_id = sec.id
             LEFT JOIN chapters ch ON sec.chapter_id = ch.id
+            LEFT JOIN documents doc ON c.document_id = doc.id
             WHERE c.embedding IS NOT NULL
             AND c.chunk_type = 'SMALL'
+            AND (doc.ingestion_status = 'FULLY_READY' OR doc.id IS NULL)
             {course_filter}
             ORDER BY c.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
@@ -188,8 +190,10 @@ class RAGService:
             LEFT JOIN subsections sub ON c.subsection_id = sub.id
             LEFT JOIN sections sec ON sub.section_id = sec.id
             LEFT JOIN chapters ch ON sec.chapter_id = ch.id
+            LEFT JOIN documents doc ON c.document_id = doc.id
             WHERE c.embedding IS NOT NULL
             AND c.chunk_type = 'LARGE'
+            AND (doc.ingestion_status = 'FULLY_READY' OR doc.id IS NULL)
             {course_filter}
             ORDER BY c.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
@@ -241,7 +245,9 @@ class RAGService:
             LEFT JOIN subsections sub ON c.subsection_id = sub.id
             LEFT JOIN sections sec ON sub.section_id = sec.id
             LEFT JOIN chapters ch ON sec.chapter_id = ch.id
+            LEFT JOIN documents doc ON c.document_id = doc.id
             WHERE c.embedding IS NOT NULL
+            AND (doc.ingestion_status = 'FULLY_READY' OR doc.id IS NULL)
             {type_filter}
             {course_filter}
             ORDER BY c.embedding <=> CAST(:embedding AS vector)

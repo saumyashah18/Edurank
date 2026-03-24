@@ -8,6 +8,7 @@ class Quiz(BaseModel):
     
     course_id = Column(Integer, ForeignKey("courses.id"))
     title = Column(String)
+    description = Column(Text, nullable=True)
     duration_minutes = Column(Integer, default=60)
     total_marks = Column(Integer, default=100)
     total_questions = Column(Integer, default=5)

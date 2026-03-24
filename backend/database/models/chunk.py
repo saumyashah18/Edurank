@@ -16,12 +16,14 @@ class Chunk(BaseModel):
     chunk_type = Column(Enum(ChunkType), nullable=False)
     embedding = Column(Vector(1024), nullable=True)
     subsection_id = Column(Integer, ForeignKey("subsections.id"))
-    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)  # Added for Phase 3/4 scoping
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)  # Scope strictly for vector queries
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=True)
     parent_chunk_id = Column(Integer, ForeignKey("chunks.id"), nullable=True)
     
     subsection = relationship("Subsection", back_populates="chunks")
     parent_chunk = relationship("Chunk", remote_side="Chunk.id", foreign_keys=[parent_chunk_id])
     concept_chunks = relationship("ConceptChunk", back_populates="chunk", cascade="all, delete-orphan")
+    document = relationship("Document", back_populates="chunks")
     
     # Relationships for cascading deletes
     source_relations = relationship("KnowledgeRelation", foreign_keys="[KnowledgeRelation.source_id]", cascade="all, delete-orphan")
