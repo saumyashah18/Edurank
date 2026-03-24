@@ -2,37 +2,18 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface UseSpeechToTextOptions {
     onResult?: (text: string) => void;
-    silenceTimeout?: number;
 }
 
 export const useSpeechToText = (options: UseSpeechToTextOptions = {}) => {
-    const { onResult, silenceTimeout = 5000 } = options;
+    const { onResult } = options;
     const [isListening, setIsListening] = useState(false);
     const [transcript, setTranscript] = useState('');
+    const [interimTranscript, setInterimTranscript] = useState('');
     const [error, setError] = useState<string | null>(null);
 
     const recognitionRef = useRef<any>(null);
-    const timeoutRef = useRef<any>(null);
-
-    const stopListening = useCallback(() => {
-        if (recognitionRef.current) {
-            recognitionRef.current.stop();
-            setIsListening(false);
-        }
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-        }
-    }, []);
-
-    const resetTimeout = useCallback(() => {
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-        }
-        timeoutRef.current = setTimeout(() => {
-            console.log('STT: Silence timeout reached, stopping...');
-            stopListening();
-        }, silenceTimeout);
-    }, [silenceTimeout, stopListening]);
+    const isListeningRef = useRef(false);
+    const finalTranscriptRef = useRef('');
 
     const startListening = useCallback(() => {
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -46,56 +27,111 @@ export const useSpeechToText = (options: UseSpeechToTextOptions = {}) => {
             const recognition = new SpeechRecognition();
             recognition.continuous = true;
             recognition.interimResults = true;
-            recognition.lang = 'en-US';
+            recognition.lang = (import.meta as any).env.VITE_STT_LANGUAGE ?? 'en-US';
 
             recognition.onstart = () => {
                 setIsListening(true);
                 setError(null);
-                resetTimeout();
             };
 
             recognition.onresult = (event: any) => {
-                let currentTranscript = '';
-                for (let i = 0; i < event.results.length; i++) {
-                    currentTranscript += event.results[i][0].transcript;
-                }
-
-                if (currentTranscript) {
-                    setTranscript(currentTranscript);
-                    if (onResult) {
-                        onResult(currentTranscript);
+                let interim = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcriptSeg = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscriptRef.current += transcriptSeg + ' ';
+                    } else {
+                        interim += transcriptSeg;
                     }
-                    resetTimeout();
+                }
+                
+                const fullTranscript = (finalTranscriptRef.current + interim).trim();
+                setTranscript(fullTranscript);
+                setInterimTranscript(interim);
+                
+                // Only trigger onResult for final segments to avoid spamming
+                if (onResult && event.results[event.results.length - 1].isFinal) {
+                    onResult(fullTranscript);
                 }
             };
 
             recognition.onerror = (event: any) => {
                 console.error('STT Error:', event.error);
                 setError(event.error);
-                stopListening();
+                
+                // Selective restart for common transient errors
+                const retryErrors = ['no-speech', 'network', 'audio-capture'];
+                if (isListeningRef.current && retryErrors.includes(event.error)) {
+                    console.log(`STT: Retrying after error: ${event.error}`);
+                    window.setTimeout(() => {
+                        if (isListeningRef.current) {
+                            try {
+                                recognition.start();
+                            } catch (e) {
+                                // Already started or blocked
+                            }
+                        }
+                    }, 1000);
+                } else {
+                    if (!retryErrors.includes(event.error)) {
+                        isListeningRef.current = false;
+                        setIsListening(false);
+                    }
+                }
             };
 
             recognition.onend = () => {
-                setIsListening(false);
+                // Auto-restart if we are still supposed to be listening
+                if (isListeningRef.current) {
+                    console.log('STT: Recognition ended unexpectedly, restarting...');
+                    try {
+                        recognition.start();
+                    } catch (err) {
+                        console.error('STT Restart Error:', err);
+                    }
+                } else {
+                    setIsListening(false);
+                }
             };
 
             recognitionRef.current = recognition;
         }
 
+        // Reset state before starting
+        finalTranscriptRef.current = '';
+        setTranscript('');
+        setInterimTranscript('');
+        isListeningRef.current = true;
+
         try {
             recognitionRef.current.start();
         } catch (err) {
             console.error('STT Start Error:', err);
+            // If already started, just ensure ref is correct
+            isListeningRef.current = true;
+            setIsListening(true);
         }
-    }, [onResult, resetTimeout, stopListening]);
+    }, [onResult]);
+
+    const stopListening = useCallback(() => {
+        isListeningRef.current = false;
+        if (recognitionRef.current) {
+            try {
+                recognitionRef.current.stop();
+            } catch (e) {
+                // Ignore if already stopped
+            }
+        }
+        setIsListening(false);
+    }, []);
 
     useEffect(() => {
         return () => {
-            if (timeoutRef.current) {
-                clearTimeout(timeoutRef.current);
-            }
+            isListeningRef.current = false;
             if (recognitionRef.current) {
-                recognitionRef.current.stop();
+                try {
+                    recognitionRef.current.stop();
+                } catch (e) {}
             }
         };
     }, []);
@@ -103,6 +139,7 @@ export const useSpeechToText = (options: UseSpeechToTextOptions = {}) => {
     return {
         isListening,
         transcript,
+        interimTranscript,
         error,
         startListening,
         stopListening,

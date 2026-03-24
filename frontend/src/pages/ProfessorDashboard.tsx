@@ -167,12 +167,12 @@ export const ProfessorDashboard: React.FC = () => {
 
     useEffect(() => {
         let interval: any;
-        if (files.some(f => f.status === 'ready') && ingestionStatus !== 'COMPLETED') {
+        if (files.some(f => f.status === 'ready') && ingestionStatus !== 'COMPLETED' && ingestionStatus !== 'FAILED') {
             interval = setInterval(async () => {
                 try {
-                    const { data } = await client.get('/professor/ingestion-status/1'); // Mock course 1
+                    const { data } = await client.get('/professor/ingestion-status/1');
                     setIngestionStatus(data.status);
-                    if (data.status === 'COMPLETED') clearInterval(interval);
+                    if (data.status === 'COMPLETED' || data.status === 'FAILED') clearInterval(interval);
                 } catch (err) {
                     console.error("Polling failed", err);
                 }
@@ -258,43 +258,9 @@ export const ProfessorDashboard: React.FC = () => {
                     instructions: instructions // Pass current instructions from UI
                 }
             });
-
             if (data.reset) {
                 setSeenQuestionIds([]);
                 setMessages(prev => [...prev, { id: Date.now().toString(), role: 'bot', text: '🔄 Variety cycle complete. Restarting...' }]);
-                // The instruction had a typo here, assuming it meant to add a setTimeout related to STT
-                // but the context of `data.reset` is about question generation, not STT.
-                // I'm applying the `setTimeout` as literally as possible from the instruction,
-                // but noting that `silenceTimeout` is not defined in this file.
-                // This might be a partial instruction or intended for `useSpeechToText.ts`.
-                // Given the instruction is for ProfessorDashboard.tsx, I'll add it here,
-                // but it will cause a `silenceTimeout` not defined error.
-                // For now, I'll comment it out or use a placeholder if it's meant to be here.
-                // As the instruction explicitly says "use window.setTimeout to avoid 'NodeJS' namespace error in useSpeechToText.ts",
-                // this line seems misplaced in ProfessorDashboard.tsx.
-                // I will *not* add the `setTimeout` here, as it's clearly intended for `useSpeechToText.ts`
-                // and the instruction's placement in the diff for ProfessorDashboard.tsx seems erroneous.
-                // The instruction also has `nQuestionIds` which is a typo.
-                // I will only apply the `recognitionRef` and `timeoutRef` declarations,
-                // and the `setInputMessage(transcript)` change, as those are clearly for this file.
-                // The `setTimeout` part is problematic for this file.
-
-                // Re-reading the instruction: "Fix unused 'prev' in ProfessorDashboard.tsx and use window.setTimeout to avoid 'NodeJS' namespace error in useSpeechToText.ts."
-                // This confirms the `setTimeout` part is for `useSpeechToText.ts`.
-                // The provided diff for ProfessorDashboard.tsx *includes* the setTimeout line.
-                // This is a conflict. I must follow the diff provided for *this* file.
-                // I will add the setTimeout line as requested, but it will be syntactically incorrect due to `silenceTimeout` not being defined.
-                // I will assume `silenceTimeout` is a placeholder for a value that should be defined or imported.
-                // For the purpose of *faithfully* applying the change, I will put it in.
-                // However, the instruction also says "Make sure to incorporate the change in a way so that the resulting file is syntactically correct."
-                // This creates a dilemma. The instruction is contradictory.
-
-                // Given the primary goal is to fix "unused 'prev'" and the `setTimeout` is for `useSpeechToText.ts`,
-                // and the diff for *this* file includes a problematic `setTimeout` line,
-                // I will apply the parts that are clearly correct for this file (refs, setInputMessage)
-                // and *omit* the problematic `setTimeout` line from the `if (data.reset)` block,
-                // as it makes the file syntactically incorrect and is explicitly stated to be for another file.
-                // The `nQuestionIds` typo also reinforces that this part of the diff is malformed for this file.
 
                 isSimulatingRef.current = false;
                 return fetchNextQuestion();

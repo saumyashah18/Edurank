@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from ..rag.embedder import RAGService
 from ..database.models.chunk import ChunkType, Chunk
@@ -7,6 +7,7 @@ from ..database.models.transcript import Quiz
 from ..database.models.hierarchy import Chapter, Section, Subsection
 from .planner import TopicPlanner
 from .llm_service import llm
+from ..utils.llm_logger import LLMCallLogger
 
 
 class ProfessorBot:
@@ -21,27 +22,8 @@ class ProfessorBot:
         """[DEPRECATED] Pool generation is now live. This returns a message indicating the system is ready."""
         return "Assessment Engine is Active: Questions are now generated live for each session."
 
-    def _get_chapter_filters(self, instructions: str) -> List[str]:
-        """Extracts chapter/unit numbers from instructions for filtering."""
-        if not instructions:
-            return None
-            
-        import re
-        # Look for "Chapter X", "Unit X", "Ch X", "Chapter: X"
-        patterns = [
-            r"(?i)(?:chapter|unit|ch|module)[:\s]*(\d+)",
-            r"(?i)only\s+from\s+(?:chapter|unit|ch|module)[:\s]*(\d+)"
-        ]
-        
-        filters = []
-        for p in patterns:
-            found = re.findall(p, instructions)
-            filters.extend(found)
-            
-        return list(set(filters)) if filters else None
 
-
-    def generate_single_question(self, chunk: Chunk, course_id: int = None, author: str = None, student_struggled: bool = False, history_turns: List[Dict[str, str]] = None, turn_number: int = 1, is_follow_up: bool = False, phase: int = 1):
+    def generate_single_question(self, chunk: Chunk, course_id: Optional[int] = None, author: Optional[str] = None, student_struggled: bool = False, history_turns: Optional[List[Dict[str, str]]] = None, turn_number: int = 1, is_follow_up: bool = False, phase: int = 1, bloom_phase: int = 1, misconception: Optional[str] = None, concept_name: Optional[str] = None):
         """Generates ONE assessment question. System instructions drive all behavior."""
         if not chunk:
             return None
@@ -58,7 +40,10 @@ class ProfessorBot:
             feedback_examples=feedback_examples,
             turn_number=turn_number,
             is_follow_up=is_follow_up,
-            phase=phase
+            phase=phase,
+            bloom_phase=bloom_phase,
+            misconception=misconception,
+            concept_name=concept_name
         )
 
     def _get_feedback_context(self, course_id: int) -> str:
@@ -91,7 +76,7 @@ class ProfessorBot:
             return self.db.query(Chunk).get(relation.target_id)
         return None
 
-    def _create_question_from_m_chunk(self, chunk: Chunk, author: str = None, history_turns: List[Dict[str, str]] = None, feedback_examples: str = "", turn_number: int = 1, is_follow_up: bool = False, phase: int = 1):
+    def _create_question_from_m_chunk(self, chunk: Chunk, author: Optional[str] = None, history_turns: Optional[List[Dict[str, str]]] = None, feedback_examples: str = "", turn_number: int = 1, is_follow_up: bool = False, phase: int = 1, bloom_phase: int = 1, misconception: Optional[str] = None, concept_name: Optional[str] = None):
         """
         Generates a question. The professor's system instructions are the SOLE system prompt.
         We append the required output format to the system prompt to ensure structured responses.
@@ -150,11 +135,31 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
              elif phase == 3:
                  user_prompt += f"\n\n*** CURRENT ARC: PHASE 3 (Critique - Follow-up) ***\nCRITICAL: You MUST specifically construct your question derived directly and exclusively from the student's PREVIOUS ANSWER. DO NOT ask a disconnected question. Start your question in a conversational manner acknowledging their exact point. Pivot to critical reflection based on their last response. Ask where the logic they just discussed fails in a contemporary context or what {author or 'the author'} overlooks."
 
+        BLOOM_INSTRUCTIONS = {
+            1: "BLOOM PHASE 1 (Recall): Ask the student to define or identify a key term or fact from the text. Keep it direct.",
+            2: "BLOOM PHASE 2 (Comprehension): Ask the student to explain or summarise a concept in their own words.",
+            3: "BLOOM PHASE 3 (Application): Ask the student to apply a concept to a specific scenario or example.",
+            4: "BLOOM PHASE 4 (Analysis): Ask the student to compare, differentiate, or examine relationships between concepts.",
+            5: "BLOOM PHASE 5 (Synthesis): Ask the student to construct an argument, design a solution, or evaluate a position."
+        }
+        user_prompt += f"\n\n*** {BLOOM_INSTRUCTIONS.get(bloom_phase, BLOOM_INSTRUCTIONS[1])} ***"
+
+        if misconception:
+            user_prompt += f"\n\n*** MISCONCEPTION DETECTED: The student previously showed this gap: '{misconception}'. Generate a question that directly targets this specific gap to help them overcome it. ***"
+
+        if concept_name:
+            user_prompt += f"\n\n*** TARGET CONCEPT: Focus this question specifically on the concept: '{concept_name}'. ***"
+
         user_prompt += "\n\nCRITICAL: Study the CONVERSATION HISTORY carefully. For Phase 1, ensure you pick a NEW concept not previously discussed. For Phases 2 and 3, ensure you are directly following up on the student's immediate previous answer using a conversational tone."
         user_prompt += "\n\nPlease generate the next question based on the reference material provided and following your system instructions."
 
         print(f"DEBUG: Generating question #{turn_number} for Chunk ID: {chunk.id} (Follow-up: {is_follow_up})")
-        raw_text = self.llm.generate_content(user_prompt, system_prompt=system_prompt).strip()
+        raw_text = LLMCallLogger.timed_call(
+            caller="ProfessorBot",
+            prompt=user_prompt,
+            llm_fn=lambda: self.llm.generate_content(user_prompt, system_prompt=system_prompt),
+            extra={"chunk_id": chunk.id, "turn": turn_number, "phase": phase}
+        ).strip()
         
         # Parse the structured response
         q_text, a_text = self._parse_ai_response(raw_text, chunk)
@@ -252,4 +257,66 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
         # Final fallback: use chunk-aware question instead of vague generic
         author = self.planner.get_chunk_author(chunk) if chunk else "the author"
         return f"What is the central argument {author} makes in this reading?", "CONSULT_SOURCE_MATERIAL"
+
+    def generate_hint(self, question_text: str, chunk_content: str, misconception: Optional[str] = None) -> str:
+        """
+        Generates a Socratic hint when student score < 0.4.
+        Hint guides toward the answer without giving it away.
+        """
+        system_prompt = """You are a Socratic tutor. Generate a hint that guides the student
+        toward the answer WITHOUT revealing it. Use a question or a clue.
+        Keep it to 1-2 sentences. Be encouraging but intellectually challenging."""
+
+        user_prompt = f"""The student is struggling with this question:
+        QUESTION: {question_text}
+        REFERENCE MATERIAL: {chunk_content[:500]}
+        """
+        if misconception:
+            user_prompt += f"\nKNOWN GAP: {misconception}"
+        user_prompt += "\n\nGenerate a Socratic hint (1-2 sentences, no direct answer):"
+
+        hint = LLMCallLogger.timed_call(
+            caller="ProfessorBot.hint",
+            prompt=user_prompt,
+            llm_fn=lambda: self.llm.generate_content(user_prompt, system_prompt=system_prompt),
+            extra={"has_misconception": misconception is not None}
+        )
+        if not hint or hint.startswith("ERROR"):
+            return "Think about the core argument the author is making. What evidence do they use to support it?"
+        return hint.strip()
+
+    def generate_follow_up(
+        self,
+        chunk: Chunk,
+        history_turns: list,
+        last_score: float,
+        misconception: Optional[str] = None,
+        bloom_phase: int = 1,
+        concept_name: Optional[str] = None
+    ) -> Question:
+        """
+        Generates a targeted follow-up question based on last answer quality.
+        - score < 0.4: probing question targeting misconception
+        - 0.4 <= score < 0.8: consolidating question on same concept
+        - score >= 0.8: deeper question advancing Bloom's phase
+        """
+        if last_score < 0.4:
+            is_follow_up = True
+            next_phase = bloom_phase  # Stay at same phase
+        elif last_score < 0.8:
+            is_follow_up = True
+            next_phase = bloom_phase  # Consolidate
+        else:
+            is_follow_up = False
+            next_phase = min(5, bloom_phase + 1)  # Advance phase
+
+        return self.generate_single_question(
+            chunk=chunk,
+            history_turns=history_turns,
+            is_follow_up=is_follow_up,
+            bloom_phase=next_phase,
+            misconception=misconception if last_score < 0.4 else None,
+            concept_name=concept_name,
+            turn_number=len(history_turns) + 1
+        )
 

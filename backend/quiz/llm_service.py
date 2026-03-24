@@ -1,90 +1,118 @@
 import os
-from openai import OpenAI
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
+"""
+EduRank LLM Service Configuration (.env)
+
+LLM_MODE=local                          # "local" or "api", default "local"
+
+# Local Ollama config
+OLLAMA_URL=http://localhost:11434        # default
+OLLAMA_MODEL=llama3.1:8b                # default
+
+# API config (OpenRouter or any OpenAI-compatible endpoint)
+OPENROUTER_API_KEY=                     # required if LLM_MODE=api
+OPENROUTER_URL=https://openrouter.ai/api/v1/chat/completions
+OPENROUTER_MODEL=mistralai/mixtral-8x7b-instruct
+"""
+
 class LLMService:
     def __init__(self):
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-        self.google_api_key = os.getenv("GOOGLE_API_KEY")
-        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-        self.model_name = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+        self.mode = os.getenv("LLM_MODE", "local").lower()
         
-        if self.groq_api_key:
-            # Groq uses OpenAI-compatible API
-            self.client = OpenAI(
-                base_url="https://api.groq.com/openai/v1",
-                api_key=self.groq_api_key,
-            )
-            self.provider = "groq"
-            print(f"[*] LLMService: Using Groq API for model {self.model_name}")
-        elif self.google_api_key and "gemini" in self.model_name.lower():
-            import google.generativeai as genai
-            genai.configure(api_key=self.google_api_key)
-            clean_model_name = self.model_name.replace("google/", "")
-            self.google_model = genai.GenerativeModel(clean_model_name)
-            self.provider = "google"
-            print(f"[*] LLMService: Using Direct Google API for model {clean_model_name}")
-        elif self.openrouter_api_key:
-            self.client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=self.openrouter_api_key,
-            )
-            self.provider = "openrouter"
-            print(f"[*] LLMService: Using OpenRouter API for model {self.model_name}")
-        else:
-            print("[!] LLMService: No API key found! Set GROQ_API_KEY, GOOGLE_API_KEY, or OPENROUTER_API_KEY")
-            self.provider = None
+        # Ollama config
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        
+        # API config
+        self.api_url = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions")
+        self.api_key = os.getenv("OPENROUTER_API_KEY")
+        self.api_model = os.getenv("OPENROUTER_MODEL", "mistralai/mixtral-8x7b-instruct")
+        
+        print(f"[LLMService] Mode: {self.mode} | Model: {self.model_name}")
+
+    @property
+    def model_name(self) -> str:
+        """Returns the active model name for logging."""
+        return self.ollama_model if self.mode == "local" else self.api_model
 
     def generate_content(self, prompt: str, system_prompt: str = None) -> str:
-        """Generates text content using Groq, Google, or OpenRouter."""
-        try:
-            if self.provider == "google":
-                # Official system_instruction support for modern Gemini models
-                if system_prompt:
-                    import google.generativeai as genai
-                    clean_model_name = self.model_name.replace("google/", "")
-                    model = genai.GenerativeModel(
-                        model_name=clean_model_name,
-                        system_instruction=system_prompt
-                    )
-                    response = model.generate_content(prompt)
-                else:
-                    response = self.google_model.generate_content(prompt)
+        """Routes to local or API provider based on mode."""
+        if self.mode == "local":
+            return self._call_ollama(prompt, system_prompt)
+        else:
+            return self._call_openrouter(prompt, system_prompt)
 
-                try:
-                    if response and response.text:
-                        return response.text
-                    return "ERROR: Empty response from AI."
-                except (AttributeError, ValueError) as e:
-                    print(f"[*] Google AI Blocked/Empty Response: {e}")
-                    return "ERROR: The AI was unable to generate a response for this topic."
+    def _call_ollama(self, prompt: str, system_prompt: str = None) -> str:
+        """Calls local Ollama instance via REST."""
+        url = f"{self.ollama_url}/api/generate"
+        payload = {
+            "model": self.ollama_model,
+            "prompt": prompt,
+            "system": system_prompt or "",
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "num_predict": 1024
+            }
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=180)
+            response.raise_for_status()
+            return response.json().get("response", "").strip()
+        except requests.exceptions.ConnectionError:
+            return "ERROR: Ollama is not running. Run 'ollama serve' first."
+        except requests.exceptions.Timeout:
+            return "ERROR: Ollama timed out. Model may still be loading."
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    def _call_openrouter(self, prompt: str, system_prompt: str = None) -> str:
+        """Calls OpenRouter or any OpenAI-compatible API."""
+        if not self.api_key:
+            return "ERROR: OPENROUTER_API_KEY not set in .env"
             
-            elif self.provider in ("groq", "openrouter"):
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append({"role": "user", "content": prompt})
-                
-                completion = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_tokens=2000,
-                    temperature=0.7
-                )
-                if not completion or not completion.choices:
-                    return "ERROR: No response from AI."
-                return completion.choices[0].message.content
-            else:
-                return "ERROR: No LLM provider configured."
-                
-        except (Exception, StopIteration) as e:
-            error_str = str(e)
-            print(f"LLM Error during generation: {error_str}")
-            if "429" in error_str or "rate_limit" in error_str.lower():
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "EduRank"
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        payload = {
+            "model": self.api_model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1024
+        }
+        
+        try:
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            if response.status_code == 429:
                 return "ERROR_RATE_LIMIT"
-            return f"ERROR: AI generation failed. Details: {error_str[:100]}"
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    def validate(self) -> bool:
+        """
+        Sends a minimal test prompt to verify the LLM is reachable.
+        Returns True if reachable, False if not.
+        """
+        test_response = self.generate_content("Reply with the word OK and nothing else.")
+        success = "ERROR" not in test_response
+        status = "REACHABLE" if success else "UNREACHABLE"
+        print(f"[LLMService] Validation: {status} | Response: {test_response[:80]}")
+        return success
 
 # Global instance
 llm = LLMService()

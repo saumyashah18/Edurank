@@ -13,52 +13,7 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useSpeechToText } from '../hooks/useSpeechToText';
 import 'mathlive';
 import { Keyboard } from 'lucide-react';
-
-declare global {
-    namespace JSX {
-        interface IntrinsicElements {
-            'math-field': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-                class?: string;
-                onInput?: (e: any) => void;
-            };
-        }
-    }
-}
-
-declare module 'react' {
-    namespace JSX {
-        interface IntrinsicElements {
-            'math-field': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-                class?: string;
-                onInput?: (e: any) => void;
-            };
-        }
-    }
-}
-
-const parseSpokenMath = (text: string) => {
-    let parsed = text;
-    const replacements = [
-        { regex: /\b(is equals to|is equal to|equals to|equal to|equals)\b/gi, replacement: '=' },
-        { regex: /\b(plus)\b/gi, replacement: '+' },
-        { regex: /\b(minus)\b/gi, replacement: '-' },
-        { regex: /\b(times|multiplied by|into)\b/gi, replacement: '*' },
-        { regex: /\b(divided by|over)\b/gi, replacement: '/' },
-        { regex: /\b(greater than or equal to)\b/gi, replacement: '>=' },
-        { regex: /\b(less than or equal to)\b/gi, replacement: '<=' },
-        { regex: /\b(greater than)\b/gi, replacement: '>' },
-        { regex: /\b(less than)\b/gi, replacement: '<' },
-        { regex: /\b(not equal to|is not equal to)\b/gi, replacement: '\\neq' },
-        { regex: /\b(squared)\b/gi, replacement: '^2' },
-        { regex: /\b(cubed)\b/gi, replacement: '^3' }
-    ];
-
-    replacements.forEach(({ regex, replacement }) => {
-        parsed = parsed.replace(regex, replacement);
-    });
-
-    return parsed;
-};
+import { normalizeMathTranscript } from '../utils/mathNormalizer';
 
 export const StudentQuiz: React.FC = () => {
     const { quizId } = useParams();
@@ -96,7 +51,7 @@ export const StudentQuiz: React.FC = () => {
         onResult: (text) => {
             const prefix = baseAnswerRef.current.trim();
             // Convert spoken words like "equals" and "plus" to actual math operators in math mode
-            const formattedText = isMathMode ? parseSpokenMath(text) : text;
+            const formattedText = isMathMode ? normalizeMathTranscript(text) : text;
             setAnswer(prefix ? prefix + " " + formattedText : formattedText);
         }
     });
@@ -124,7 +79,7 @@ export const StudentQuiz: React.FC = () => {
                         setAnswer(prev => {
                             const prefix = prev.trim();
                             // Convert spoken words like "equals" and "plus" to actual math operators in math mode
-                            const formattedText = isMathMode ? parseSpokenMath(transcribedText) : transcribedText;
+                            const formattedText = isMathMode ? normalizeMathTranscript(transcribedText) : transcribedText;
                             return prefix ? prefix + " " + formattedText : formattedText;
                         });
                     }
@@ -588,6 +543,7 @@ export const StudentQuiz: React.FC = () => {
                             >
                                 {isMathMode ? (
                                     <div className="flex-1 bg-white/[0.05] border border-accent/40 rounded-2xl px-4 py-3 min-h-[52px] shadow-inner font-mono text-lg overflow-x-auto overflow-y-hidden custom-scrollbar flex items-center">
+                                        {/* @ts-expect-error Custom MathLive web component */}
                                         <math-field
                                             ref={mathfieldRef}
                                             style={{ width: '100%', minWidth: 'min-content', outline: 'none', background: 'transparent', color: 'white', border: 'none', fontSize: '1.2rem' }}
@@ -599,7 +555,7 @@ export const StudentQuiz: React.FC = () => {
                                                 }
                                             }}
                                         />
-                                    </div>
+                                    </div> 
                                 ) : (
                                     <textarea
                                         ref={textareaRef}

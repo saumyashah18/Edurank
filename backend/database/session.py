@@ -1,47 +1,57 @@
 import os
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, scoped_session
 from .models.base import Base
 
 load_dotenv()
 
-# Use SQLite for local development by default, or Postgres if specified
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./aissociate.db")
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/edurank_dev"
+)
 
-_engine_kwargs = {}
-if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
-elif SQLALCHEMY_DATABASE_URL.startswith("postgresql"):
-    _engine_kwargs["pool_pre_ping"] = True  # reconnect on stale connections
+engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, **_engine_kwargs)
+# Enable pgvector extension on startup
+with engine.connect() as conn:
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    conn.commit()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 db_session = scoped_session(SessionLocal)
 
 def init_db():
-    # Import all models here to ensure they are registered with Base
     from .models.user import User
     from .models.course import Course
     from .models.hierarchy import Chapter, Section, Subsection, RawMaterial
     from .models.chunk import Chunk, KnowledgeRelation
     from .models.question import Question
     from .models.transcript import Quiz, Transcript
-    
+
     Base.metadata.create_all(bind=engine)
-    
-    # Seed default data
+
     db = SessionLocal()
-    from .models.user import UserRole
-    if not db.query(User).filter_by(username="professor").first():
-        prof = User(username="professor", email="prof@edu.rank", hashed_password="hashed", role=UserRole.PROFESSOR)
-
-        db.add(prof)
-        db.commit()
-        course = Course(title="General Course", description="Default syllabus container", professor_id=prof.id)
-
-        db.add(course)
-        db.commit()
-    db.close()
-
+    try:
+        from .models.user import UserRole
+        if not db.query(User).filter_by(username="professor").first():
+            prof = User(
+                username="professor",
+                email="prof@edu.rank",
+                hashed_password="hashed",
+                role=UserRole.PROFESSOR
+            )
+            db.add(prof)
+            db.commit()
+            course = Course(
+                title="General Course",
+                description="Default syllabus container",
+                professor_id=prof.id
+            )
+            db.add(course)
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[init_db] Seed data already exists or error: {e}")
+    finally:
+        db.close()

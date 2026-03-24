@@ -1,4 +1,5 @@
-from sqlalchemy import Column, String, Integer, ForeignKey, Text, Float, Boolean
+# -- ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS is_processing BOOLEAN DEFAULT FALSE;
+from sqlalchemy import Column, String, Integer, ForeignKey, Text, Float, Boolean, DateTime
 from sqlalchemy.orm import relationship
 from .base import BaseModel
 
@@ -16,6 +17,7 @@ class Quiz(BaseModel):
     allow_audio = Column(Boolean, default=True)
     ai_eval_enabled = Column(Boolean, default=False)  # Toggle for AI rubric evaluation
     ai_eval_rubric = Column(Text, nullable=True)  # JSON: {"total_marks": N, "criteria": [{"name": ..., "marks": N}]}
+    is_processing = Column(Boolean, default=False)
     
     transcripts = relationship("Transcript", back_populates="quiz")
     course = relationship("Course", backref="quizzes")

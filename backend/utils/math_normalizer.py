@@ -1,191 +1,106 @@
 import re
-from typing import Dict, List, Tuple
-
+import json
+import os
+from typing import List, Dict, Any
 
 class MathNormalizer:
     """
-    Converts spoken mathematical expressions to symbolic notation.
-    
-    Examples:
-        "a is equal to b plus c" → "a = b + c"
-        "x squared minus y" → "x² - y"
-        "two times three" → "2 × 3"
+    Converts spoken mathematical expressions to symbolic notation using a shared rule set.
     """
     
     def __init__(self):
-        # Basic operators
-        self.operator_replacements = {
-            r'\bis equal to\b': '=',
-            r'\bequals\b': '=',
-            r'\bequal\b': '=',
-            r'\bplus\b': '+',
-            r'\bminus\b': '-',
-            r'\btimes\b': '×',
-            r'\bmultiplied by\b': '×',
-            r'\bdivided by\b': '÷',
-            r'\bover\b': '/',
-            r'\bmod\b': '%',
-            r'\bmodulo\b': '%',
-        }
+        self.rules = []
+        self._load_rules()
+
+    def _load_rules(self):
+        """Load normalization rules from the shared JSON file."""
+        # The shared directory is at the project root
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        rules_path = os.path.join(base_dir, "shared", "math_rules.json")
         
-        # Comparison operators
-        self.comparison_replacements = {
-            r'\bgreater than or equal to\b': '≥',
-            r'\bless than or equal to\b': '≤',
-            r'\bgreater than\b': '>',
-            r'\bless than\b': '<',
-            r'\bnot equal to\b': '≠',
-        }
-        
-        # Powers and roots
-        self.power_replacements = {
-            r'\bsquared\b': '²',
-            r'\bcubed\b': '³',
-            r'\bto the power of (\w+)\b': r'^\1',
-            r'\bto the (\w+) power\b': r'^\1',
-            r'\bsquare root of\b': '√',
-            r'\bsqrt of\b': '√',
-        }
-        
-        # Greek letters (common in math)
-        self.greek_replacements = {
-            r'\balpha\b': 'α',
-            r'\bbeta\b': 'β',
-            r'\bgamma\b': 'γ',
-            r'\bdelta\b': 'δ',
-            r'\bepsilon\b': 'ε',
-            r'\btheta\b': 'θ',
-            r'\blambda\b': 'λ',
-            r'\bmu\b': 'μ',
-            r'\bpi\b': 'π',
-            r'\bsigma\b': 'σ',
-            r'\bomega\b': 'ω',
-        }
-        
-        # Number words to digits
-        self.number_words = {
-            r'\bzero\b': '0',
-            r'\bone\b': '1',
-            r'\btwo\b': '2',
-            r'\bthree\b': '3',
-            r'\bfour\b': '4',
-            r'\bfive\b': '5',
-            r'\bsix\b': '6',
-            r'\bseven\b': '7',
-            r'\beight\b': '8',
-            r'\bnine\b': '9',
-            r'\bten\b': '10',
-        }
-        
-        # Special functions
-        self.function_replacements = {
-            r'\bsine of\b': 'sin',
-            r'\bsin of\b': 'sin',
-            r'\bcosine of\b': 'cos',
-            r'\bcos of\b': 'cos',
-            r'\btangent of\b': 'tan',
-            r'\btan of\b': 'tan',
-            r'\blog of\b': 'log',
-            r'\bnatural log of\b': 'ln',
-            r'\bln of\b': 'ln',
-        }
-    
+        try:
+            if os.path.exists(rules_path):
+                with open(rules_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.rules = data.get("rules", [])
+            else:
+                print(f"[MathNormalizer] Warning: rules file not found at {rules_path}")
+        except Exception as e:
+            print(f"[MathNormalizer] Error loading math rules: {e}")
+
     def normalize(self, text: str) -> str:
         """
         Convert spoken mathematical expression to symbolic notation.
-        
-        Args:
-            text: Spoken mathematical expression
-            
-        Returns:
-            Normalized mathematical expression with symbols
         """
-        if not text or not text.strip():
-            return text
+        if not text:
+            return ""
         
         result = text.lower().strip()
         
-        # Apply replacements in order of specificity (most specific first)
-        replacement_groups = [
-            self.comparison_replacements,  # "greater than or equal to" before "greater than"
-            self.power_replacements,
-            self.function_replacements,
-            self.greek_replacements,
-            self.operator_replacements,
-            self.number_words,
-        ]
-        
-        for replacements in replacement_groups:
-            for pattern, replacement in replacements.items():
-                result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
-        
-        # Clean up spacing around operators
-        result = self._clean_spacing(result)
-        
-        return result
-    
+        for rule in self.rules:
+            symbol = rule.get("symbol")
+            position = rule.get("position", "infix")
+            is_regex = rule.get("regex", False)
+            
+            # Sort spoken triggers by length descending to match longest first
+            # (e.g., "is equal to" before "equal to")
+            spoken_triggers = rule.get("spoken", [])
+            if not is_regex:
+                spoken_triggers = sorted(spoken_triggers, key=len, reverse=True)
+            
+            for spoken in spoken_triggers:
+                if is_regex:
+                    # Use the spoken string directly as a regex pattern
+                    pattern = spoken
+                    # Replace $1 with the first capture group \1
+                    replacement = symbol.replace("$1", r"\1")
+                    result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+                elif position == "postfix":
+                    # e.g., "x squared" -> "x²"
+                    result = re.sub(rf"(\w+)\s+{re.escape(spoken)}\b", rf"\1{symbol}", result, flags=re.IGNORECASE)
+                elif position == "prefix":
+                    # e.g., "square root of x" -> "√x"
+                    result = re.sub(rf"\b{re.escape(spoken)}\s+(\w+)", rf"{symbol}\1", result, flags=re.IGNORECASE)
+                else:
+                    # infix or simple substitution (e.g., "pi" -> "π")
+                    result = re.sub(rf"\b{re.escape(spoken)}\b", symbol, result, flags=re.IGNORECASE)
+
+        return self._clean_spacing(result)
+
     def _clean_spacing(self, text: str) -> str:
-        """Remove extra spaces around mathematical operators."""
-        # Add space around operators for readability
-        operators = ['=', '+', '-', '×', '÷', '/', '>', '<', '≥', '≤', '≠', '%']
+        """Clean up mathematical notation spacing for readability."""
+        # Operators that should have spaces around them
+        infix_ops = ['=', '+', '−', '×', '/', '>', '<', '≥', '≤', '≈', '≠', '∴']
+        for op in infix_ops:
+            text = re.sub(rf"\s*{re.escape(op)}\s*", f" {op} ", text)
         
-        for op in operators:
-            # Remove existing spaces
-            text = re.sub(rf'\s*{re.escape(op)}\s*', op, text)
-            # Add single space on both sides
-            text = text.replace(op, f' {op} ')
+        # Remove extra spaces
+        text = re.sub(r'\s+', ' ', text).strip()
         
-        # Clean up multiple spaces
-        text = re.sub(r'\s+', ' ', text)
+        # Specific cleanup for units/symbols that shouldn't have preceding space
+        # e.g., "x ²" -> "x²"
+        text = re.sub(r'\s+([²³^])', r'\1', text)
         
-        # Remove spaces before/after parentheses
-        text = re.sub(r'\s*\(\s*', '(', text)
-        text = re.sub(r'\s*\)\s*', ')', text)
+        # Prefix symbols shouldn't have FOLLOWING space
+        # e.g., "√ x" -> "√x"
+        text = re.sub(r'([√])\s+', r'\1', text)
         
-        # Remove spaces before superscripts (², ³, etc.)
-        text = re.sub(r'\s+([²³⁴⁵⁶⁷⁸⁹⁰¹])', r'\1', text)
-        
-        # Remove spaces after square root and before the operand
-        text = re.sub(r'√\s+', '√', text)
-        
-        return text.strip()
-    
+        return text
+
     def contains_math(self, text: str) -> bool:
-        """
-        Check if text likely contains mathematical expressions.
-        
-        Returns:
-            True if text contains math-related keywords
-        """
-        math_keywords = [
-            'equal', 'plus', 'minus', 'times', 'divided',
-            'squared', 'cubed', 'power', 'root',
-            'greater', 'less', 'than',
-            'sin', 'cos', 'tan', 'log',
-            'alpha', 'beta', 'gamma', 'theta', 'pi'
-        ]
-        
+        """Heuristic to check if text contains math-related keywords."""
+        if not text: return False
         text_lower = text.lower()
-        return any(keyword in text_lower for keyword in math_keywords)
+        # Extract all possible spoken triggers from rules
+        triggers = []
+        for r in self.rules:
+            triggers.extend(r.get("spoken", []))
+        
+        return any(re.search(rf"\b{re.escape(t)}\b", text_lower) for t in triggers)
 
-
-# Global instance for easy import
+# Global instance
 math_normalizer = MathNormalizer()
 
-
-# Convenience function
 def normalize_math_speech(text: str) -> str:
-    """
-    Convenience function to normalize mathematical speech.
-    
-    Args:
-        text: Spoken mathematical expression
-        
-    Returns:
-        Normalized expression with symbols
-        
-    Example:
-        >>> normalize_math_speech("a is equal to b plus c")
-        'a = b + c'
-    """
+    """Convenience function to access the global normalizer instance."""
     return math_normalizer.normalize(text)

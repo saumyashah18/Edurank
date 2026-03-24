@@ -1,6 +1,7 @@
 from sqlalchemy import Column, String, Integer, ForeignKey, Text, Enum
 import enum
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 from .base import BaseModel
 
 class ChunkType(enum.Enum):
@@ -13,10 +14,14 @@ class Chunk(BaseModel):
     
     content = Column(Text, nullable=False)
     chunk_type = Column(Enum(ChunkType), nullable=False)
-    vector_id = Column(String, index=True) # Reference to FAISS index
+    embedding = Column(Vector(1024), nullable=True)
     subsection_id = Column(Integer, ForeignKey("subsections.id"))
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)  # Added for Phase 3/4 scoping
+    parent_chunk_id = Column(Integer, ForeignKey("chunks.id"), nullable=True)
     
     subsection = relationship("Subsection", back_populates="chunks")
+    parent_chunk = relationship("Chunk", remote_side="Chunk.id", foreign_keys=[parent_chunk_id])
+    concept_chunks = relationship("ConceptChunk", back_populates="chunk", cascade="all, delete-orphan")
     
     # Relationships for cascading deletes
     source_relations = relationship("KnowledgeRelation", foreign_keys="[KnowledgeRelation.source_id]", cascade="all, delete-orphan")

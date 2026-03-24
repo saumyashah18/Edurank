@@ -1,0 +1,21 @@
+[project]
+name = "edurank"
+requires-python = ">=3.13"
+
+[tool.pyright]
+venvPath = "/Users/apple/Edurank"
+venv = ".venv"
+pythonVersion = "3.13"
+pythonPlatform = "Darwin"
+typeCheckingMode = "basic"
+include = ["backend", "scripts", "*.py"]
+extraPaths = [
+    "/Users/apple/Edurank",
+    "/Users/apple/Edurank/backend",
+    "/Users/apple/Edurank/.venv/lib/python3.13/site-packages"
+]
+reportMissingModuleSource = "none"
+reportMissingImports = "warning"
+executionEnvironments = [
+  { "root": "/Users/apple/Edurank/backend" }
+]

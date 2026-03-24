@@ -4,13 +4,14 @@ This is purely additive and does NOT touch the existing EvaluationService.
 """
 import json
 import re
+from typing import Optional
 from .llm_service import llm
 
 
 class RubricEvaluationService:
     """Evaluates a student answer against a structured rubric using the LLM."""
 
-    def evaluate(self, question_text: str, student_answer: str, rubric: dict) -> dict | None:
+    def evaluate(self, question_text: str, student_answer: str, rubric: dict) -> Optional[dict]:
         """
         Evaluate a student answer against the given rubric.
         
@@ -62,7 +63,7 @@ Respond in EXACTLY this JSON format (no other text):
 
         return self._parse_response(response_text, criteria)
 
-    def _parse_response(self, response_text: str, criteria: list) -> dict | None:
+    def _parse_response(self, response_text: str, criteria: list) -> Optional[dict]:
         """Parse the LLM JSON response into a structured result."""
         try:
             # Try to extract JSON from the response (handle markdown code blocks)

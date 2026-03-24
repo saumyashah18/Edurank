@@ -4,7 +4,7 @@ from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
-from typing import List, Dict
+from typing import List, Dict, Optional
 import os
 import json
 
@@ -121,26 +121,68 @@ def get_professor_assessments(db: Session = Depends(get_db)):
 # --- Professor Endpoints ---
 
 def run_material_ingestion(course_id: int, file_path: str):
-    """Background worker with its own DB session."""
+    """
+    Background worker with retry logic and granular status tracking.
+    Retries the full ingestion up to MAX_RETRIES times on failure.
+    Sets ingestion_error on Course with specific failure reason.
+    """
     from ..database.models.course import Course, IngestionStatus
-    db = SessionLocal()
-    try:
-        print(f"DEBUG: Starting background ingestion for {file_path}")
-        processor = MaterialProcessor(db)
-        file_ext = file_path.lower().split(".")[-1] if "." in file_path else "pdf"
-        processor.process_material(course_id, file_path, file_ext)
-        print(f"DEBUG: Background ingestion complete for {file_path}")
-    except Exception as e:
-        print(f"ERROR in background ingestion: {e}")
+
+    MAX_RETRIES = 3
+    RETRY_DELAY_SECONDS = 5
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        db = SessionLocal()
         try:
+            print(f"[Ingestion] Attempt {attempt}/{MAX_RETRIES} for course {course_id}, file: {file_path}")
+            processor = MaterialProcessor(db)
+            file_ext = file_path.lower().split(".")[-1] if "." in file_path else "pdf"
+            processor.process_material(course_id, file_path, file_ext)
+            print(f"[Ingestion] SUCCESS on attempt {attempt} for course {course_id}")
+            return  # Success — exit retry loop
+
+        except Exception as e:
+            db.rollback()
+            error_msg = str(e)
+            print(f"[Ingestion] FAILED attempt {attempt}/{MAX_RETRIES}: {error_msg}")
+
+            # Update course status with attempt info
+            try:
+                course = db.query(Course).get(course_id)
+                if course:
+                    if attempt < MAX_RETRIES:
+                        course.ingestion_status = IngestionStatus.EXTRACTING  # Will retry
+                        course.ingestion_error = f"Attempt {attempt} failed: {error_msg}. Retrying..."
+                    else:
+                        course.ingestion_status = IngestionStatus.FAILED
+                        course.ingestion_error = f"All {MAX_RETRIES} attempts failed. Last error: {error_msg}"
+                    db.commit()
+            except Exception as db_e:
+                print(f"[Ingestion] Could not update course status: {db_e}")
+
+            if attempt < MAX_RETRIES:
+                import time
+                time.sleep(RETRY_DELAY_SECONDS)
+        finally:
+            db.close()
+
+def run_material_ingestion_locked(course_id: int, file_path: str):
+    """Wraps run_material_ingestion with ingestion lock release."""
+    try:
+        run_material_ingestion(course_id, file_path)
+    finally:
+        db = SessionLocal()
+        try:
+            from ..database.models.course import Course
             course = db.query(Course).get(course_id)
             if course:
-                course.ingestion_status = IngestionStatus.FAILED
+                course.is_ingesting = False
                 db.commit()
-        except Exception as db_err:
-            print(f"CRITICAL: Failed to update course status to FAILED: {db_err}")
-    finally:
-        db.close()
+            print(f"[Ingestion] Lock released for course {course_id}")
+        except Exception as e:
+            print(f"[Ingestion] Could not release lock for course {course_id}: {e}")
+        finally:
+            db.close()
 
 @app.post("/professor/upload/{course_id}")
 async def upload_material(
@@ -149,16 +191,33 @@ async def upload_material(
     file: UploadFile = File(...), 
     db: Session = Depends(get_db)
 ):
-    """Uploads material and triggers hierarchical ingestion."""
+    """Uploads material and triggers hierarchical ingestion with locking."""
+    from ..database.models.course import Course, IngestionStatus
+
+    # Course-level ingestion lock
+    course = db.query(Course).get(course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.is_ingesting:
+        raise HTTPException(
+            status_code=409,
+            detail="This course is already being processed. Please wait for the current ingestion to complete."
+        )
+
+    # Acquire lock
+    course.is_ingesting = True
+    course.ingestion_status = IngestionStatus.PENDING
+    course.ingestion_error = None
+    db.commit()
+
     # Save file locally
     file_path = f"uploads/{file.filename}"
     os.makedirs("uploads", exist_ok=True)
     with open(file_path, "wb") as f:
         f.write(await file.read())
     
-    # Process hierarchy and chunks in background with fresh session
-    print(f"DEBUG: Triggering background ingestion for course {course_id}, file: {file.filename}")
-    background_tasks.add_task(run_material_ingestion, course_id, file_path)
+    print(f"[Upload] Triggering ingestion for course {course_id}, file: {file.filename}")
+    background_tasks.add_task(run_material_ingestion_locked, course_id, file_path)
     
     return {"status": "File uploaded. Processing in background.", "filename": file.filename}
 
@@ -206,7 +265,10 @@ def get_ingestion_status(course_id: int, db: Session = Depends(get_db)):
     course = db.query(Course).get(course_id)
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    return {"status": course.ingestion_status.value}
+    return {
+        "status": course.ingestion_status or "PENDING",
+        "error": course.ingestion_error
+    }
 
 
 # --- Lazy-Loaded Singletons for Stability ---
@@ -233,9 +295,9 @@ def clean_context_label(text: str) -> str:
 @app.get("/professor/simulate/next")
 def get_next_simulation_question(
     course_id: int, 
-    exclude_ids: str = None, 
-    history: str = None, 
-    instructions: str = None, 
+    exclude_ids: Optional[str] = None, 
+    history: Optional[str] = None, 
+    instructions: Optional[str] = None, 
     db: Session = Depends(get_db),
     services: AIServices = Depends(get_ai_services)
 ):
@@ -299,7 +361,7 @@ def rank_question(question_id: int, interaction: str, db: Session = Depends(get_
     return {"status": "Ranked", "upvotes": question.upvotes, "downvotes": question.downvotes}
 
 @app.post("/professor/quiz/create")
-def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: str = None, allow_audio: bool = True, ai_eval_enabled: bool = False, ai_eval_rubric: str = None, db: Session = Depends(get_db)):
+def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: Optional[str] = None, allow_audio: bool = True, ai_eval_enabled: bool = False, ai_eval_rubric: Optional[str] = None, db: Session = Depends(get_db)):
     """Saves the exam configuration including system instructions."""
     quiz = Quiz(
         course_id=course_id, 
@@ -440,8 +502,8 @@ def get_student_ai_evaluation(quiz_id: int, enrollment_id: str, db: Session = De
         if t.ai_eval_results:
             try:
                 eval_data = json.loads(t.ai_eval_results)
-                awarded = eval_data.get("total_awarded", 0)
-                max_marks = eval_data.get("total_max", 0)
+                awarded = int(eval_data.get("total_awarded", 0))
+                max_marks = int(eval_data.get("total_max", 0))
                 grand_total_awarded += awarded
                 grand_total_max += max_marks
                 per_question.append({
@@ -520,7 +582,7 @@ def update_student_response(
 
     transcript = db.query(Transcript).filter_by(
         quiz_id=quiz_id,
-        question_id=int(q_id),
+        question_id=int(q_id) if q_id is not None else 0,
         enrollment_id=str(e_id)
     ).first()
     
@@ -561,133 +623,55 @@ def submit_answer(
 def get_student_next_question(
     quiz_id: int, 
     enrollment_id: str, 
-    student_name: str = None, 
-    exclude_ids: str = None, 
+    student_name: Optional[str] = None, 
+    exclude_ids: Optional[str] = None, 
     db: Session = Depends(get_db),
     services: AIServices = Depends(get_ai_services)
 ):
-    """Fetch the next deterministic question for the student quiz session."""
-    quiz = db.query(Quiz).get(quiz_id)
-    # 1. Detect Session State (History, Struggle, Reactions)
-    # Count how many questions this student has ALREADY answered in this quiz
-    # We count transcripts as finished interactions
-    answered_count = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).count()
-    
-    # 7TH TURN TERMINATION (STRICT) -> Now Configurable
-    # If total_questions is set (e.g. 5, 10, etc.), enforce it.
-    # If total_questions is 0 or negative, it means "Infinite" -> No termination.
-    
-    limit = quiz.total_questions if quiz.total_questions and quiz.total_questions > 0 else -1
-    
-    if limit > 0 and answered_count >= limit:
-        return {
-            "id": 999999, # Dummy ID for termination
-            "text": "Assessment Concluded. Thank you for completing the questions. Please verify your answers and click 'Finish Assessment' to submit.",
-            "answer": "HIDDEN",
-            "context": "Complete",
-            "reset": True # Frontend knows to finish
-        }
-
-    last_transcripts = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).limit(10).all()
-    
-    # Build conversation history so the LLM has full context
-    history_turns = []
-    if last_transcripts:
-        for t in reversed(last_transcripts):
-            if t.question:
-                history_turns.append({"role": "bot", "text": t.question.question_text})
-            history_turns.append({"role": "user", "text": t.student_answer})
- 
-    # 2. Topic Selection Logic
     try:
-        services.bot.instructions = quiz.instructions 
+        # Step 1: Detect Session State & Locking
+        quiz = db.query(Quiz).get(quiz_id)
+        if not quiz:
+            raise HTTPException(status_code=404, detail="Quiz not found")
+        if quiz.is_processing:
+            raise HTTPException(status_code=429, detail="A question is already being generated. Please wait.")
         
-        chunk = None
-        author = None
-        is_follow_up = False
-        
-        # Turn Tracking & Phase Calculation
-        # Turn 0, 1, 2 -> Topic 1 (Phases 1, 2, 3)
-        # Turn 3, 4, 5 -> Topic 2 (Phases 1, 2, 3)
-        current_turn_in_topic = answered_count % 3
-        phase = current_turn_in_topic + 1
-        
-        last_interaction = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).order_by(Transcript.id.desc()).first()
-        
-        # --- Conceptual Gap Detection ---
-        if last_interaction and last_interaction.conceptual_gap:
-            print(f"[*] CONCEPTUAL GAP DETECTED in last turn. Attempting to find related prerequisite material.")
+        quiz.is_processing = True
+        db.commit()
+
+        try:
+            # Re-fetch records once lock is acquired
+            answered_count = db.query(Transcript).filter_by(enrollment_id=enrollment_id, quiz_id=quiz_id).count()
             
-            # 1. Try Knowledge Graph (Prerequisites/Related)
-            last_chunk_id = last_interaction.question.chunk_id if last_interaction.question else None
-            related_chunk = None
-            if last_chunk_id:
-                related_chunk = services.bot.get_related_chunk(last_chunk_id)
+            manager = QuizManager(db, services.eval_svc)
             
-            if related_chunk:
-                print(f"[*] Found related chunk {related_chunk.id} via Knowledge Graph. Switching topic.")
-                chunk = related_chunk
-                author = services.planner.get_chunk_author(chunk)
-            else:
-                # 2. Fallback: Stay on same section
-                print(f"[*] No graph relation found. Staying in current section.")
-                preferred_section_id = last_interaction.question.subsection.section_id if last_interaction.question and last_interaction.question.subsection else None
-                chunk, author = services.planner.select_next_topic(
-                    course_id=quiz.course_id, 
-                    enrollment_id=enrollment_id, 
-                    quiz_id=quiz_id,
-                    preferred_section_id=preferred_section_id
-                )
-            is_follow_up = True
-        else:
-            # Normal Flow: Determine if we should stay on the same topic/section
-            preferred_section_id = None
-            
-            # STRICT 3-Question Arc on the SAME Chunk
-            if current_turn_in_topic > 0 and last_interaction and last_interaction.question:
-                 print(f"[*] Phrase {phase} of 3: Staying on SAME CHUNK ID {last_interaction.question.chunk_id}")
-                 chunk = last_interaction.question.chunk
-                 author = services.planner.get_chunk_author(chunk)
-            else:
-                # Start of NEW Topic (Phase 1)
-                chunk, author = services.planner.select_next_topic(
-                    course_id=quiz.course_id, 
-                    enrollment_id=enrollment_id, 
-                    quiz_id=quiz_id,
-                    preferred_section_id=None
-                )
-        
-        if not chunk:
+            # Correctly handle turn_number for QuizGraph
+            res = manager.get_next_question(
+                quiz_id=quiz_id,
+                enrollment_id=enrollment_id,
+                student_name=student_name,
+                turn_number=answered_count + 1,
+                total_questions=quiz.total_questions or 10
+            )
+
+            if "error" in res:
+                raise HTTPException(status_code=500, detail=res["error"])
+
             return {
-                "id": 999999,
-                "text": "Thank you for completing the assessment. You may now click to Finish Assessment.",
-                "answer": "HIDDEN",
-                "context": "Complete",
-                "reset": True
+                "id": res["question_id"],
+                "text": res["question_text"],
+                "answer": "HIDDEN_DURING_QUIZ",
+                "context": res["concept_name"] or "Assessment",
+                "session_phase": res["session_phase"],
+                "bloom_phase": res["bloom_phase"]
             }
 
-        # Generate question — system instructions control all behavior (phases, greeting, topics)
-        print(f"DEBUG: Turn {answered_count + 1} (Topic Turn {current_turn_in_topic + 1}, Phase {phase}, Follow-up: {is_follow_up}) for Chunk {chunk.id}")
-        
-        question = services.bot.generate_single_question(
-            chunk, 
-            course_id=quiz.course_id, 
-            author=author, 
-            history_turns=history_turns,
-            turn_number=answered_count + 1,
-            is_follow_up=is_follow_up,
-            phase=phase
-        )
-        
-        if not question:
-            raise HTTPException(status_code=500, detail="Failed to generate question.")
-
-        return {
-            "id": question.id, 
-            "text": question.question_text, 
-            "answer": "HIDDEN_DURING_QUIZ", 
-            "context": clean_context_label(question.subsection.section.title) if question.subsection else "Assessment"
-        }
+        finally:
+            # Always release lock
+            quiz = db.query(Quiz).get(quiz_id)
+            if quiz:
+                quiz.is_processing = False
+                db.commit()
     except HTTPException:
         raise
     except (Exception, StopIteration) as e:
