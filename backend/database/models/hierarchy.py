@@ -8,8 +8,10 @@ class Chapter(BaseModel):
     title = Column(String, nullable=False)
     order = Column(Integer)
     course_id = Column(Integer, ForeignKey("courses.id"))
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=True)
     
     course = relationship("Course", back_populates="chapters")
+    document = relationship("Document") # Optional reverse relationship handled via backref if needed
     sections = relationship("Section", back_populates="chapter", cascade="all, delete-orphan")
 
 class Section(BaseModel):

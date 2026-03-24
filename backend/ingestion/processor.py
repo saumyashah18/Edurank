@@ -530,7 +530,12 @@ class MaterialProcessor:
         print(f"  > Storing {len(hierarchy_data)} chapters to DB...")
 
         for chap_data in hierarchy_data:
-            chapter = Chapter(title=chap_data["title"], order=chap_data["order"], course_id=course_id)
+            chapter = Chapter(
+                title=chap_data["title"], 
+                order=chap_data["order"], 
+                course_id=course_id,
+                document_id=document.id if document else None
+            )
             self.db.add(chapter)
             self.db.flush()
 

@@ -287,12 +287,18 @@ def delete_document(doc_id: int, db: Session = Depends(get_db)):
     """Deletes a document and all its associated fragments from the database."""
     from ..database.models.course import Document
     from ..database.models.chunk import Chunk
+    from ..database.models.hierarchy import Chapter
+
     doc = db.query(Document).get(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     try:
         # Wipe vectors targeted to this document
         db.query(Chunk).filter(Chunk.document_id == doc_id).delete(synchronize_session=False)
+        
+        # Wipe the hierarchy (Chapters) specifically created from this document
+        db.query(Chapter).filter(Chapter.document_id == doc_id).delete(synchronize_session=False)
+
         db.delete(doc)
         db.commit()
         return {"status": "Document deleted successfully."}
