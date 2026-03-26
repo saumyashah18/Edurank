@@ -85,4 +85,4 @@ class ConceptChunk(BaseModel):
     )
 
     concept = relationship("Concept", back_populates="concept_chunks")
-    chunk = relationship("Chunk", backref="concept_links")
+    chunk = relationship("Chunk", back_populates="concept_chunks")

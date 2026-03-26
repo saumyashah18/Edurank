@@ -1,5 +1,6 @@
 import time
 import json
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 
 class LLMCallLogger:
@@ -14,17 +15,18 @@ class LLMCallLogger:
     def log_call(
         caller: str,          # e.g. "EvaluationService", "ProfessorBot", "ConceptExtractor"
         prompt: str,
-        response: str,
+        response: Any,
         latency_ms: float,
         extra: dict = None    # optional — e.g. {"chunk_id": 42, "score": 0.7}
     ):
+        is_error = isinstance(response, str) and response.startswith("ERROR")
         record = {
             "ts": datetime.utcnow().isoformat(),
             "caller": caller,
-            "prompt_chars": len(prompt),
-            "response_chars": len(response) if response else 0,
+            "prompt_chars": len(prompt) if isinstance(prompt, str) else 0,
+            "response_chars": len(response) if isinstance(response, (str, list)) else 0,
             "latency_ms": round(latency_ms, 1),
-            "success": not (response or "").startswith("ERROR"),
+            "success": not is_error,
         }
         if extra:
             record.update(extra)

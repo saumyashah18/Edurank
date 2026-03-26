@@ -89,7 +89,7 @@ class Chunker:
         print(f"[3/3] Committing Multi-Granularity Index (S, M, L) to DB...")
 
         # Small (S) = Token-limited paragraphs with overlap
-        small_chunks = self._add_overlap(small_paragraphs)
+        small_chunks = self._add_overlap(paragraphs)
         self._create_chunks(subsection_id, small_chunks, ChunkType.SMALL, course_id=course_id, document_id=document_id)
 
         # Medium (M) = Refined (merged) paragraphs
@@ -105,7 +105,7 @@ class Chunker:
     #  STRUCTURED DOCX ENTRY POINT (new — Feature #5)
     # ------------------------------------------------------------------
 
-    def chunk_structured(self, subsection_id: int, structured_paragraphs: List[Dict], course_id: Optional[int] = None):
+    def chunk_structured(self, subsection_id: int, structured_paragraphs: List[Dict], course_id: Optional[int] = None, document_id: Optional[int] = None):
         """
         Alternate entry point for heading-structured input from DOCX extractor.
         Each dict: {"level": int, "text": str}
@@ -114,7 +114,7 @@ class Chunker:
         Falls back to generate_chunks() if input is empty.
         """
         if not structured_paragraphs:
-            return self.generate_chunks(subsection_id)
+            return self.generate_chunks(subsection_id, document_id=document_id)
         
         if course_id is None:
             sub = self.db.query(Subsection).get(subsection_id)

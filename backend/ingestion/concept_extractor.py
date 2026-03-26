@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from ..database.models.chunk import Chunk, ChunkType
 from ..database.models.concept import Concept, ConceptRelation, ConceptChunk
-from ..database.models.concept import Concept, ConceptRelation, ConceptChunk
 from ..quiz.llm_service import llm
 from ..utils.llm_logger import LLMCallLogger
 

@@ -182,7 +182,7 @@ def run_document_ingestion_locked(course_id: int, document_id: int, file_path: s
         except Exception as e:
             print(f"[Ingestion] Could not release lock for Document {document_id}: {e}")
         finally:
-            db.close()()
+            db.close()
 
 @app.post("/professor/upload/{course_id}")
 async def upload_material(
@@ -286,18 +286,57 @@ def get_document_status(doc_id: int, db: Session = Depends(get_db)):
 def delete_document(doc_id: int, db: Session = Depends(get_db)):
     """Deletes a document and all its associated fragments from the database."""
     from ..database.models.course import Document
-    from ..database.models.chunk import Chunk
-    from ..database.models.hierarchy import Chapter
+    from ..database.models.chunk import Chunk, KnowledgeRelation
+    from ..database.models.hierarchy import Chapter, Section, Subsection, RawMaterial
+    from ..database.models.question import Question
+    from ..database.models.concept import ConceptChunk
 
     doc = db.query(Document).get(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     try:
-        # Wipe vectors targeted to this document
+        # 0. Collect all chunk IDs for this document (needed for relation cleanup)
+        chunk_ids = [c.id for c in db.query(Chunk).filter(Chunk.document_id == doc_id).all()]
+        
+        if chunk_ids:
+            # Clean KnowledgeRelation rows referencing these chunks
+            db.query(KnowledgeRelation).filter(
+                (KnowledgeRelation.source_id.in_(chunk_ids)) |
+                (KnowledgeRelation.target_id.in_(chunk_ids))
+            ).delete(synchronize_session=False)
+            
+            # Clean ConceptChunk links referencing these chunks
+            db.query(ConceptChunk).filter(
+                ConceptChunk.chunk_id.in_(chunk_ids)
+            ).delete(synchronize_session=False)
+
+        # 1. Wipe chunks targeted to this document
         db.query(Chunk).filter(Chunk.document_id == doc_id).delete(synchronize_session=False)
         
-        # Wipe the hierarchy (Chapters) specifically created from this document
-        db.query(Chapter).filter(Chapter.document_id == doc_id).delete(synchronize_session=False)
+        # 2. Cascade through hierarchy: chapters → sections → subsections
+        chapters = db.query(Chapter).filter(Chapter.document_id == doc_id).all()
+        for chapter in chapters:
+            sections = db.query(Section).filter(Section.chapter_id == chapter.id).all()
+            for section in sections:
+                subsection_ids = [s.id for s in db.query(Subsection).filter(Subsection.section_id == section.id).all()]
+                if subsection_ids:
+                    # Delete questions, raw materials, and remaining chunks tied to these subsections
+                    db.query(Question).filter(Question.subsection_id.in_(subsection_ids)).delete(synchronize_session=False)
+                    db.query(RawMaterial).filter(RawMaterial.subsection_id.in_(subsection_ids)).delete(synchronize_session=False)
+                    # Clean relations for subsection-linked chunks too
+                    sub_chunk_ids = [c.id for c in db.query(Chunk).filter(Chunk.subsection_id.in_(subsection_ids)).all()]
+                    if sub_chunk_ids:
+                        db.query(KnowledgeRelation).filter(
+                            (KnowledgeRelation.source_id.in_(sub_chunk_ids)) |
+                            (KnowledgeRelation.target_id.in_(sub_chunk_ids))
+                        ).delete(synchronize_session=False)
+                        db.query(ConceptChunk).filter(
+                            ConceptChunk.chunk_id.in_(sub_chunk_ids)
+                        ).delete(synchronize_session=False)
+                    db.query(Chunk).filter(Chunk.subsection_id.in_(subsection_ids)).delete(synchronize_session=False)
+                    db.query(Subsection).filter(Subsection.id.in_(subsection_ids)).delete(synchronize_session=False)
+                db.query(Section).filter(Section.id == section.id).delete(synchronize_session=False)
+            db.query(Chapter).filter(Chapter.id == chapter.id).delete(synchronize_session=False)
 
         db.delete(doc)
         db.commit()
@@ -428,7 +467,7 @@ def save_quiz_draft(course_id: int, data: dict, db: Session = Depends(get_db)):
         
     quiz.title = data.get("title", quiz.title)
     quiz.description = data.get("description", quiz.description)
-    quiz.duration_minutes = data.get("duration", quiz.duration_minutes)
+    quiz.duration_minutes = data.get("duration_minutes", quiz.duration_minutes)
     quiz.total_marks = data.get("total_marks", quiz.total_marks)
     quiz.total_questions = data.get("total_questions", quiz.total_questions)
     quiz.instructions = data.get("instructions", quiz.instructions)
@@ -521,6 +560,7 @@ def get_quiz_details(quiz_id: int, db: Session = Depends(get_db)):
         "total_marks": quiz.total_marks,
         "total_questions": quiz.total_questions,
         "is_finalized": quiz.is_finalized == 1,
+        "instructions": quiz.instructions,
         "ai_eval_enabled": quiz.ai_eval_enabled or False,
         "ai_eval_rubric": quiz.ai_eval_rubric
     }

@@ -255,7 +255,7 @@ class MaterialProcessor:
 
         # OCR pass for scanned pages
         if needs_ocr:
-            self._set_status(course, IngestionStatus.OCR_PROCESSING)
+            self._set_status(document, IngestionStatus.OCR_PROCESSING)
             print(f"[*] Running OCR on scanned pages...")
 
             import pytesseract
@@ -319,7 +319,7 @@ class MaterialProcessor:
     #  DOCX EXTRACTION (heading-aware)
     # ------------------------------------------------------------------
 
-    def _extract_docx(self, file_path: str, course: Course) -> List[Dict[str, Any]]:
+    def _extract_docx(self, file_path: str, document) -> List[Dict[str, Any]]:
         """
         Improved DOCX extraction. If headings are found, uses them for structure.
         Falls back to flat paragraph joining if no headings detected.
