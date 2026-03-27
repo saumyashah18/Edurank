@@ -19,7 +19,7 @@ class EvaluationService:
         Evaluates a student answer strictly as an Audit / Dialogue record.
         IMPORTANT: This does NOT vectorize or embed the student's answer into the knowledge base.
         """
-        # Retrieve relevant context ONLY (Student answer is used as a search query, not stored in FAISS)
+        # Retrieve relevant context ONLY (Student answer is used as a search query, not stored in the knowledge base)
         context_chunks = LLMCallLogger.timed_call(
             caller="RAGService.retrieve",
             prompt=student_answer, # Using student_answer as the query for logging

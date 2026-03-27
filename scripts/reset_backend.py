@@ -32,18 +32,7 @@ def reset_backend():
     finally:
         db.close()
 
-    # 2. Clear FAISS Index
-    print("[*] Clearing FAISS index...")
-    faiss_dir = "faiss_index"
-    if os.path.exists(faiss_dir):
-        shutil.rmtree(faiss_dir)
-        os.makedirs(faiss_dir)
-        print("[+] FAISS index cleared.")
-    else:
-        os.makedirs(faiss_dir)
-        print("[+] FAISS index directory created.")
-
-    # 3. Delete Uploads
+    # 2. Delete Uploads
     print("[*] Deleting uploaded files...")
     uploads_dir = "uploads"
     if os.path.exists(uploads_dir):

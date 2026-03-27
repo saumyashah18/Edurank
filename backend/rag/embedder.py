@@ -79,8 +79,7 @@ class Embedder:
 
     def reset_index(self):
         """
-        Clears all stored embeddings from the database.
-        Replaces the old FAISS file deletion logic.
+        Clears all stored embeddings from the database (Postgres pgvector).
         """
         print("[*] Resetting all stored embeddings...")
         self.db.query(Chunk).update({"embedding": None})
