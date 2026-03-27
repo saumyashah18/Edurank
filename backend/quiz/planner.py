@@ -15,15 +15,31 @@ class TopicPlanner:
         quiz_id: Optional[int] = None,
         filter_keywords: Optional[list] = None,
         used_chunk_ids: Optional[list] = None,
-        preferred_section_id: Optional[int] = None
+        preferred_section_id: Optional[int] = None,
+        instructions: Optional[str] = None
     ) -> tuple:
         """
         New implementation: Concept Graph Traversal.
         Prioritizes Prerequisites and Struggling concepts.
+        When instructions are provided, pre-filters chunks via vector search
+        to only select from topic-relevant content.
         """
         from ..database.models.student_concept_state import StudentConceptState
         from ..database.models.concept import Concept, ConceptRelation, ConceptChunk
         from ..database.models.chunk import Chunk, ChunkType
+
+        # ── INSTRUCTION-BASED TOPIC FILTER ──
+        # If professor provided instructions, use vector search to find
+        # only the chunks that are semantically related to the instruction topic
+        instruction_chunk_ids = None
+        if instructions and instructions.strip():
+            instruction_chunk_ids = self._get_instruction_filtered_chunks(
+                instructions, course_id, top_k=30
+            )
+            if instruction_chunk_ids:
+                print(f"[TopicPlanner] Instruction filter active: {len(instruction_chunk_ids)} chunks match topic")
+            else:
+                print(f"[TopicPlanner] Instruction filter found no matches, using all chunks")
 
         # Step 1: Query student state for this quiz
         states_exist = self.db.query(StudentConceptState).filter_by(
@@ -32,7 +48,7 @@ class TopicPlanner:
 
         if not states_exist:
             # Fallback to rotation for first question
-            return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id)
+            return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=instruction_chunk_ids)
 
         # Step 2: Priority Ordering
         target_concept = None
@@ -107,16 +123,19 @@ class TopicPlanner:
             )
             if used_chunk_ids:
                 search_query = search_query.filter(~Chunk.id.in_(used_chunk_ids))
+            # Apply instruction topic filter
+            if instruction_chunk_ids:
+                search_query = search_query.filter(Chunk.id.in_(instruction_chunk_ids))
             
             chosen_chunk = search_query.first()
             if chosen_chunk:
                 return chosen_chunk, self.get_chunk_author(chosen_chunk)
 
         # Final Fallback
-        return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id)
+        return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=instruction_chunk_ids)
 
-    def _select_by_rotation(self, course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id):
-        """Original rotation logic moved here for fallback."""
+    def _select_by_rotation(self, course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=None):
+        """Original rotation logic moved here for fallback. Supports instruction-based filtering."""
         import random
         import hashlib
         from ..database.models.transcript import Transcript
@@ -150,20 +169,27 @@ class TopicPlanner:
         for chapter in chapters:
             for section in chapter.sections:
                 for subsection in section.subsections:
-                    available_chunks = self.db.query(Chunk).filter(
+                    chunk_query = self.db.query(Chunk).filter(
                         Chunk.subsection_id == subsection.id,
                         Chunk.chunk_type == ChunkType.MEDIUM,
                         ~Chunk.id.in_(used_chunk_ids)
-                    ).all()
+                    )
+                    # Apply instruction topic filter
+                    if instruction_chunk_ids:
+                        chunk_query = chunk_query.filter(Chunk.id.in_(instruction_chunk_ids))
+                    available_chunks = chunk_query.all()
                     for chunk in available_chunks:
                         sid = section.id
                         if sid not in section_candidates: section_candidates[sid] = []
                         section_candidates[sid].append(chunk)
 
         if not section_candidates:
-            fallback = self.db.query(Chunk).join(Subsection).join(Section).join(Chapter).filter(
+            fallback_query = self.db.query(Chunk).join(Subsection).join(Section).join(Chapter).filter(
                 Chapter.course_id == course_id, Chunk.chunk_type == ChunkType.MEDIUM
-            ).all()
+            )
+            if instruction_chunk_ids:
+                fallback_query = fallback_query.filter(Chunk.id.in_(instruction_chunk_ids))
+            fallback = fallback_query.all()
             if not fallback: return None, None
             c = random.choice(fallback)
             return c, self.get_chunk_author(c)
@@ -183,6 +209,38 @@ class TopicPlanner:
 
         if not chosen_chunk: return None, None
         return chosen_chunk, self.get_chunk_author(chosen_chunk)
+
+    def _get_instruction_filtered_chunks(self, instructions: str, course_id: int, top_k: int = 30) -> list:
+        """
+        Uses vector search to find chunks semantically related to the professor's instructions.
+        Returns a list of chunk IDs that match the instruction topic.
+        """
+        try:
+            from ..rag.embedder import Embedder, RAGService
+            from ..database.models.chunk import ChunkType
+
+            embedder = Embedder(self.db)
+            rag = RAGService(self.db, embedder)
+
+            # Use the instruction text as a search query
+            matching_chunks = rag.retrieve(
+                query=instructions,
+                top_k=top_k,
+                chunk_types=[ChunkType.SMALL, ChunkType.MEDIUM],
+                course_id=course_id
+            )
+
+            if matching_chunks:
+                chunk_ids = [c.id for c in matching_chunks]
+                # Also include parent chunks of SMALL hits
+                for c in matching_chunks:
+                    if c.parent_chunk_id and c.parent_chunk_id not in chunk_ids:
+                        chunk_ids.append(c.parent_chunk_id)
+                return chunk_ids
+            return None
+        except Exception as e:
+            print(f"[TopicPlanner] Instruction filter error: {e}")
+            return None
 
     def get_current_bloom_phase(self, student_id: str, quiz_id: int, concept_id: int) -> int:
         """Returns current Bloom's phase (1-5) for this student/concept/quiz."""

@@ -387,7 +387,7 @@ def get_next_simulation_question(
         
         # 2. Live Selection
         exclude_list = [int(i) for i in exclude_ids.split(",") if i.isdigit()] if exclude_ids else None
-        chunk, author = services.planner.select_next_topic(course_id=course_id, used_chunk_ids=exclude_list)
+        chunk, author = services.planner.select_next_topic(course_id=course_id, used_chunk_ids=exclude_list, instructions=instructions)
         if not chunk:
             raise HTTPException(status_code=404, detail="No unique topics found. Review syllabus or clear history.")
 

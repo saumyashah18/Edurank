@@ -4,7 +4,7 @@ const getApiBaseUrl = () => {
     if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
     const { protocol, hostname } = window.location;
     // In production (aissociate.ahduni.edu.in), use same origin (nginx proxies to backend)
-    if (hostname === 'aissociate.ahduni.edu.in') return `${protocol}//${hostname}`;
+    if (hostname.includes('ahduni.edu.in') || hostname === '10.20.10.131') return `${protocol}//${hostname}`;
     // Local dev fallback
     return `http://${hostname}:8000`;
 };
@@ -38,7 +38,7 @@ export const api = {
     }
 };
 
-// Direct HTTPS upload URL bypassing Cloudflare - uses self-signed cert on server
-export const DIRECT_UPLOAD_URL = 'https://10.20.10.131:8443';
+// Direct upload URL
+export const DIRECT_UPLOAD_URL = 'http://aissociate.ahduni.edu.in';
 
 export default client;

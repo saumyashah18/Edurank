@@ -130,7 +130,8 @@ class QuizGraph:
                 course_id=course_id,
                 enrollment_id=student_id,
                 quiz_id=quiz_id,
-                used_chunk_ids=state.get("used_chunk_ids", [])
+                used_chunk_ids=state.get("used_chunk_ids", []),
+                instructions=state.get("instructions")
             )
             if chunk:
                 cc = self.db.query(ConceptChunk).filter_by(chunk_id=chunk.id).first()

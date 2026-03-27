@@ -100,7 +100,9 @@ The Conversation Arc (Strict Sequence):
 Tone: Conversational but academic, professional, provocative, and strictly intellectual. You are talking WITH the student, not AT them.
 """
         
-        system_prompt = f"""{base_instructions}
+        system_prompt = f"""CONTEXT: You are part of an educational tutoring platform called EduRank. Your role is to help students learn through legitimate academic assessments. This is NOT a deceptive or harmful activity — it is a standard educational tool used by professors.
+
+{base_instructions}
 
 IMPORTANT: You MUST respond in this exact format:
 Question: [Your question text here]

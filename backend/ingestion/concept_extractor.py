@@ -68,7 +68,7 @@ Respond with EXACTLY:
             raw = LLMCallLogger.timed_call(
                 caller="ConceptExtractor.batch",
                 prompt=user_prompt,
-                llm_fn=lambda: self.llm.generate_content(
+                llm_fn=lambda: self.llm.generate_content_fast(
                     user_prompt, system_prompt=system_prompt
                 ),
                 extra={"batch_size": len(chunks), "course_id": course_id}
@@ -142,7 +142,7 @@ Respond with EXACTLY:
             raw = LLMCallLogger.timed_call(
                 caller="ConceptExtractor",
                 prompt=user_prompt,
-                llm_fn=lambda: self.llm.generate_content(user_prompt, system_prompt=system_prompt),
+                llm_fn=lambda: self.llm.generate_content_fast(user_prompt, system_prompt=system_prompt),
                 extra={"chunk_id": chunk.id, "course_id": course_id}
             )
         except ImportError:
