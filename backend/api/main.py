@@ -247,10 +247,17 @@ def review_question(question_id: int, status: str, db: Session = Depends(get_db)
 @app.post("/professor/generate/{course_id}")
 def trigger_generation(course_id: int, db: Session = Depends(get_db)):
     """Triggers the ProfessorBot to generate questions deterministically across the syllabus."""
+    from ..database.models.transcript import Quiz
     print(f"Triggering deterministic question generation for course {course_id}...")
     planner = TopicPlanner(db)
     rag = RAGService(db, Embedder(db))
     bot = ProfessorBot(db, rag, planner)
+    
+    # Load instructions from latest draft
+    quiz = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
+    if quiz:
+        bot.instructions = quiz.instructions
+
     res = bot.generate_questions_for_course(course_id)
     print(f"Generation result: {res}")
     return {"status": "Generation request processed", "details": res}
@@ -340,6 +347,16 @@ def delete_document(doc_id: int, db: Session = Depends(get_db)):
 
         db.delete(doc)
         db.commit()
+
+        # 3. Physical File Deletion
+        try:
+            file_path = f"uploads/{doc.filename}"
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"[Cleanup] Physical file deleted: {file_path}")
+        except Exception as fe:
+            print(f"[Cleanup] Warning: Could not delete physical file {doc.filename}: {fe}")
+
         return {"status": "Document deleted successfully."}
     except Exception as e:
         db.rollback()
@@ -373,21 +390,43 @@ def get_next_simulation_question(
     exclude_ids: Optional[str] = None, 
     history: Optional[str] = None, 
     instructions: Optional[str] = None, 
+    selected_document_ids: Optional[str] = None,
     db: Session = Depends(get_db),
     services: AIServices = Depends(get_ai_services)
 ):
     """Fetch a question for simulation/testing using deterministic selection and live generation."""
     try:
-        # 1. Use manual instructions if provided (from UI), else fetch latest from DB
+        # 1. Parse document selection override if provided, else fetch from draft
+        final_doc_ids = None
+        if selected_document_ids:
+            try:
+                final_doc_ids = json.loads(selected_document_ids)
+            except json.JSONDecodeError:
+                pass
+        
+        if not final_doc_ids:
+            quiz_config = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
+            if quiz_config and quiz_config.selected_document_ids:
+                try:
+                    final_doc_ids = json.loads(quiz_config.selected_document_ids)
+                except json.JSONDecodeError:
+                    pass
+
+        # 2. Use manual instructions if provided (from UI), else fetch latest from DB
         if instructions:
             services.bot.instructions = instructions
         else:
             quiz_config = db.query(Quiz).filter_by(course_id=course_id).order_by(Quiz.id.desc()).first()
             services.bot.instructions = quiz_config.instructions if quiz_config else None
         
-        # 2. Live Selection
+        # 3. Live Selection
         exclude_list = [int(i) for i in exclude_ids.split(",") if i.isdigit()] if exclude_ids else None
-        chunk, author = services.planner.select_next_topic(course_id=course_id, used_chunk_ids=exclude_list, instructions=instructions)
+        chunk, author = services.planner.select_next_topic(
+            course_id=course_id, 
+            used_chunk_ids=exclude_list, 
+            instructions=instructions,
+            selected_document_ids=final_doc_ids
+        )
         if not chunk:
             raise HTTPException(status_code=404, detail="No unique topics found. Review syllabus or clear history.")
 
@@ -471,15 +510,24 @@ def save_quiz_draft(course_id: int, data: dict, db: Session = Depends(get_db)):
     quiz.total_marks = data.get("total_marks", quiz.total_marks)
     quiz.total_questions = data.get("total_questions", quiz.total_questions)
     quiz.instructions = data.get("instructions", quiz.instructions)
-    quiz.allow_audio = data.get("allow_audio", quiz.allow_audio)
     quiz.ai_eval_enabled = data.get("ai_eval_enabled", quiz.ai_eval_enabled)
     quiz.ai_eval_rubric = data.get("ai_eval_rubric", quiz.ai_eval_rubric)
+    quiz.selected_document_ids = data.get("selected_document_ids", quiz.selected_document_ids)
     
     db.commit()
     return {"status": "saved", "quiz_id": quiz.id}
 
+@app.delete("/professor/quiz/draft/{course_id}")
+def delete_quiz_draft(course_id: int, db: Session = Depends(get_db)):
+    """Deletes the latest unfinalized quiz (draft) for a course."""
+    quiz = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
+    if quiz:
+        db.delete(quiz)
+        db.commit()
+    return {"status": "draft cleared"}
+
 @app.post("/professor/quiz/create")
-def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: Optional[str] = None, allow_audio: bool = True, ai_eval_enabled: bool = False, ai_eval_rubric: Optional[str] = None, db: Session = Depends(get_db)):
+def create_exam_config(course_id: int, title: str, duration: int, total_marks: int, total_questions: int = 5, instructions: Optional[str] = None, allow_audio: bool = True, ai_eval_enabled: bool = False, ai_eval_rubric: Optional[str] = None, selected_document_ids: Optional[str] = None, db: Session = Depends(get_db)):
     """Saves or updates the exam configuration before generation."""
     quiz = db.query(Quiz).filter_by(course_id=course_id, is_finalized=0).order_by(Quiz.id.desc()).first()
     if not quiz:
@@ -494,6 +542,7 @@ def create_exam_config(course_id: int, title: str, duration: int, total_marks: i
     quiz.allow_audio = allow_audio
     quiz.ai_eval_enabled = ai_eval_enabled
     quiz.ai_eval_rubric = ai_eval_rubric
+    quiz.selected_document_ids = selected_document_ids
     db.commit()
     return {"quiz_id": quiz.id}
 
@@ -511,6 +560,8 @@ def update_quiz_details(quiz_id: int, data: dict, db: Session = Depends(get_db))
         quiz.ai_eval_enabled = data["ai_eval_enabled"]
     if "ai_eval_rubric" in data:
         quiz.ai_eval_rubric = data["ai_eval_rubric"]
+    if "selected_document_ids" in data:
+        quiz.selected_document_ids = data["selected_document_ids"]
     
     db.commit()
     return {"status": "updated"}

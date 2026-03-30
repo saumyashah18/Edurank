@@ -1,6 +1,6 @@
 import json
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from ..database.models.chunk import Chunk, ChunkType
@@ -12,6 +12,37 @@ class ConceptExtractor:
     def __init__(self, db: Session):
         self.db = db
         self.llm = llm
+
+    def _extract_json(self, text: str) -> Optional[dict]:
+        """Robustly extracts JSON from a string, handling markdown blocks and preambles."""
+        clean = text.strip()
+        
+        # 1. Try direct parse
+        try:
+            return json.loads(clean)
+        except json.JSONDecodeError:
+            pass
+            
+        # 2. Try stripping markdown fences
+        if "```" in clean:
+            # Matches ```json ... ``` or just ``` ... ```
+            match = re.search(r"```(?:json)?\s*(.*?)\s*```", clean, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1).strip())
+                except json.JSONDecodeError:
+                    pass
+
+        # 3. Last resort: Find the first { and last }
+        start = clean.find('{')
+        end = clean.rfind('}')
+        if start != -1 and end != -1:
+            try:
+                return json.loads(clean[start:end+1])
+            except json.JSONDecodeError:
+                pass
+                
+        return None
 
     def _extract_from_batch(self, chunks: List[Chunk], course_id: int) -> None:
         """
@@ -78,15 +109,8 @@ Respond with EXACTLY:
                 user_prompt, system_prompt=system_prompt
             )
 
-        clean = raw.strip()
-        if clean.startswith("```"):
-            lines = clean.split("\n")
-            if lines[0].startswith("```"): lines = lines[1:]
-            if lines[-1].strip() == "```": lines = lines[:-1]
-            clean = "\n".join(lines).strip()
-
-        try:
-            data = json.loads(clean)
+        data = self._extract_json(raw)
+        if data:
             batch_results = data.get("batch", [])
             for result in batch_results:
                 idx = result.get("chunk_index", 1) - 1
@@ -95,7 +119,7 @@ Respond with EXACTLY:
                     concepts_data = result.get("concepts", [])
                     self._upsert_concepts(concepts_data, chunk, course_id)
             return
-        except json.JSONDecodeError:
+        else:
             print(f"[ConceptExtractor] Batch parse failed for "
                   f"{len(chunks)} chunks, falling back to individual calls")
             for chunk in chunks:
@@ -105,8 +129,6 @@ Respond with EXACTLY:
         """
         Fallback: processes one chunk at a time.
         Used when batch JSON parsing fails.
-        Identical logic to original _extract_from_chunk but stores
-        via _upsert_concepts() instead of returning a list.
         """
         system_prompt = (
             "You are an academic knowledge graph builder. Extract key concepts from the provided text. "
@@ -148,22 +170,13 @@ Respond with EXACTLY:
         except ImportError:
             raw = self.llm.generate_content(user_prompt, system_prompt=system_prompt)
 
-        clean = raw.strip()
-        if clean.startswith("```"):
-            lines = clean.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean = "\n".join(lines).strip()
-
-        try:
-            data = json.loads(clean)
+        data = self._extract_json(raw)
+        if data:
             concepts = data.get("concepts", [])
             valid_concepts = [c for c in concepts if "name" in c and c["name"]]
             self._upsert_concepts(valid_concepts, chunk, course_id)
-        except Exception as e:
-            print(f"[ConceptExtractor] JSON parse error: {e}")
+        else:
+            print(f"[ConceptExtractor] JSON extraction failed for chunk {chunk.id}")
 
     def _upsert_concepts(
         self,

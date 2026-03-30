@@ -96,7 +96,7 @@ class RAGService:
     #  PRECISE RETRIEVAL (Small-to-Big)
     # ------------------------------------------------------------------
 
-    def retrieve_precise(self, query: str, top_k: int = 3, course_id: Optional[int] = None):
+    def retrieve_precise(self, query: str, top_k: int = 3, course_id: Optional[int] = None, selected_document_ids: Optional[list] = None):
         """
         Searches SMALL chunks by vector similarity, then returns parent chunks
         (MEDIUM) where available for broader context. Deduplicates by parent_chunk_id.
@@ -108,14 +108,19 @@ class RAGService:
             print(f"[!] RAG retrieve_precise Embedding Error: {e}")
             return []
 
-        # Build optional course filter
+        # Build optional filters
         course_filter = "AND ch.course_id = :course_id" if course_id else ""
+        doc_filter = "AND doc.id IN :doc_ids" if selected_document_ids else ""
+        
         params = {
             "embedding": str(query_embedding),
             "top_k": top_k,
         }
         if course_id:
             params["course_id"] = course_id
+        if selected_document_ids:
+            # SQLAlchemy with text() handles lists in IN clauses by wrapping in tuple
+            params["doc_ids"] = tuple(selected_document_ids)
 
         results = self.db.execute(text(f"""
             SELECT c.id, (c.embedding <=> CAST(:embedding AS vector)) AS distance
@@ -128,6 +133,7 @@ class RAGService:
             AND c.chunk_type = 'SMALL'
             AND (doc.ingestion_status IN ('COMPLETED', 'CONCEPT_EXTRACTION', 'FULLY_READY') OR doc.id IS NULL)
             {course_filter}
+            {doc_filter}
             ORDER BY c.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), params).fetchall()
@@ -164,7 +170,7 @@ class RAGService:
     #  BROAD RETRIEVAL (LARGE chunks for topic/section selection)
     # ------------------------------------------------------------------
 
-    def retrieve_broad(self, query: str, top_k: int = 5, course_id: Optional[int] = None):
+    def retrieve_broad(self, query: str, top_k: int = 5, course_id: Optional[int] = None, selected_document_ids: Optional[list] = None):
         """
         Searches LARGE chunks for broad topic matching.
         Used by: TopicPlanner for section/topic selection.
@@ -176,12 +182,16 @@ class RAGService:
             return []
 
         course_filter = "AND ch.course_id = :course_id" if course_id else ""
+        doc_filter = "AND doc.id IN :doc_ids" if selected_document_ids else ""
+        
         params = {
             "embedding": str(query_embedding),
             "top_k": top_k,
         }
         if course_id:
             params["course_id"] = course_id
+        if selected_document_ids:
+            params["doc_ids"] = tuple(selected_document_ids)
 
         results = self.db.execute(text(f"""
             SELECT c.id, (c.embedding <=> CAST(:embedding AS vector)) AS distance
@@ -194,6 +204,7 @@ class RAGService:
             AND c.chunk_type = 'LARGE'
             AND (doc.ingestion_status IN ('COMPLETED', 'CONCEPT_EXTRACTION', 'FULLY_READY') OR doc.id IS NULL)
             {course_filter}
+            {doc_filter}
             ORDER BY c.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), params).fetchall()
@@ -213,10 +224,10 @@ class RAGService:
     #  LEGACY / GENERIC RETRIEVAL (backward compatible)
     # ------------------------------------------------------------------
 
-    def retrieve(self, query: str, top_k: int = 3, chunk_types: Optional[list] = None, course_id: Optional[int] = None):
+    def retrieve(self, query: str, top_k: int = 3, chunk_types: Optional[list] = None, course_id: Optional[int] = None, selected_document_ids: Optional[list] = None):
         """
         Generic retrieval method — preserved for backward compatibility.
-        Supports optional chunk_type and course_id filters.
+        Supports optional chunk_type, course_id, and document_id filters.
         """
         try:
             query_embedding = self.embedder.embed_query(query)
@@ -231,12 +242,16 @@ class RAGService:
             type_filter = f"AND c.chunk_type IN ({','.join(type_names)})"
 
         course_filter = "AND ch.course_id = :course_id" if course_id else ""
+        doc_filter = "AND doc.id IN :doc_ids" if selected_document_ids else ""
+        
         params = {
             "embedding": str(query_embedding),
             "top_k": top_k,
         }
         if course_id:
             params["course_id"] = course_id
+        if selected_document_ids:
+            params["doc_ids"] = tuple(selected_document_ids)
 
         results = self.db.execute(text(f"""
             SELECT c.id, (c.embedding <=> CAST(:embedding AS vector)) AS distance
@@ -249,6 +264,7 @@ class RAGService:
             AND (doc.ingestion_status IN ('COMPLETED', 'CONCEPT_EXTRACTION', 'FULLY_READY') OR doc.id IS NULL)
             {type_filter}
             {course_filter}
+            {doc_filter}
             ORDER BY c.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """), params).fetchall()

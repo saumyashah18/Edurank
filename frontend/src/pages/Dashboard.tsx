@@ -78,7 +78,7 @@ export const Dashboard: React.FC = () => {
     };
 
     const handleCreate = () => {
-        navigate('/professor/create');
+        navigate('/professor/create?new=true');
     };
 
     return (

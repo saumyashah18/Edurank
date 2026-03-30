@@ -18,6 +18,7 @@ class Quiz(BaseModel):
     allow_audio = Column(Boolean, default=True)
     ai_eval_enabled = Column(Boolean, default=False)  # Toggle for AI rubric evaluation
     ai_eval_rubric = Column(Text, nullable=True)  # JSON: {"total_marks": N, "criteria": [{"name": ..., "marks": N}]}
+    selected_document_ids = Column(Text, nullable=True) # JSON list of document IDs
     is_processing = Column(Boolean, default=False)
     
     transcripts = relationship("Transcript", back_populates="quiz")

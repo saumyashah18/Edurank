@@ -41,8 +41,10 @@ class EvaluationService:
         prompt = f"""
         You are an academic evaluator. Evaluate the student's answer based on the provided reference material, the ideal answer, and the specific grading guidelines below.
         
-        [GRADING STYLE GUIDELINES]
+        STRICT MASTER GRADING RULES:
         {instructions if instructions else "Standard academic evaluation, fair and rigorous."}
+
+        Evaluation Task: Rate the student's answer against the reference material and ideal answer using the STRICT MASTER GRADING RULES above.
 
         Question: {question_text}
         Ideal Answer: {ideal_answer}
@@ -86,7 +88,7 @@ class EvaluationService:
         conceptual_gap = True if gap_match and gap_match.group(1).lower() in ["yes", "true"] else False
 
         # Phase 5: Misconception Detection & Concept Tagging
-        misconception_data = self._detect_misconception(question_text, student_answer, score, reasoning)
+        misconception_data = self._detect_misconception(question_text, student_answer, score, reasoning, instructions=instructions)
 
         return {
             "score": score,
@@ -98,9 +100,10 @@ class EvaluationService:
             "concept_tags": misconception_data.get("concept_tags", [])
         }
 
-    def _detect_misconception(self, question_text: str, student_answer: str, score: float, reasoning: str) -> dict:
+    def _detect_misconception(self, question_text: str, student_answer: str, score: float, reasoning: str, instructions: Optional[str] = None) -> dict:
         """
         Deep diagnostic analysis of a student's answer to identify conceptual gaps.
+        Incorporates professor guidelines to ensure consistency in feedback style.
         Only runs for scores < 0.85 to optimize performance.
         """
         if score >= 0.85:
@@ -116,6 +119,9 @@ class EvaluationService:
         )
 
         user_prompt = f"""A student answered an exam question. Diagnose their understanding.
+        
+   [PROFESSOR GUIDELINES]
+   {instructions if instructions else "Standard academic diagnostic assessment."}
 
    QUESTION: {question_text}
    STUDENT ANSWER: {student_answer}

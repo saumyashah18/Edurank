@@ -1,3 +1,4 @@
+import random
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -16,7 +17,8 @@ class TopicPlanner:
         filter_keywords: Optional[list] = None,
         used_chunk_ids: Optional[list] = None,
         preferred_section_id: Optional[int] = None,
-        instructions: Optional[str] = None
+        instructions: Optional[str] = None,
+        selected_document_ids: Optional[list] = None
     ) -> tuple:
         """
         New implementation: Concept Graph Traversal.
@@ -28,18 +30,50 @@ class TopicPlanner:
         from ..database.models.concept import Concept, ConceptRelation, ConceptChunk
         from ..database.models.chunk import Chunk, ChunkType
 
+        # STRICT ENFORCEMENT: If no documents are selected, do not generate anything.
+        if not selected_document_ids:
+            print("[TopicPlanner] No documents selected. Aborting topic selection.")
+            return None, None
+
         # ── INSTRUCTION-BASED TOPIC FILTER ──
         # If professor provided instructions, use vector search to find
         # only the chunks that are semantically related to the instruction topic
         instruction_chunk_ids = None
         if instructions and instructions.strip():
             instruction_chunk_ids = self._get_instruction_filtered_chunks(
-                instructions, course_id, top_k=30
+                instructions, course_id, top_k=30, selected_document_ids=selected_document_ids
             )
             if instruction_chunk_ids:
                 print(f"[TopicPlanner] Instruction filter active: {len(instruction_chunk_ids)} chunks match topic")
+            elif selected_document_ids:
+                print(f"[TopicPlanner] Instruction filter found no matches for TICKED documents, restricted to selection.")
             else:
                 print(f"[TopicPlanner] Instruction filter found no matches, using all chunks")
+
+        def is_informative(c_obj):
+            if not c_obj or not c_obj.content: return False
+            content = c_obj.content.strip()
+            # Strict character count
+            if len(content) < 180: return False
+            
+            # Common headers/footers/logos to ignore completely
+            forbidden_exact = ["HKUST Business School", "Case Studies", "Center for Business Case Studies", "Thompson Center", "All rights reserved", "Copyright", "Page "]
+            for f in forbidden_exact:
+                if f.lower() in content.lower() and len(content) < 350:
+                    print(f"[TopicPlanner] Filtering out junk chunk {c_obj.id}: {content[:40]}...")
+                    return False
+            return True
+
+        if instruction_chunk_ids:
+            # Re-fetch objects for filtering
+            chunks = self.db.query(Chunk).filter(Chunk.id.in_(instruction_chunk_ids)).all()
+            valid_chunks = [c for c in chunks if is_informative(c)]
+            if valid_chunks:
+                c = random.choice(valid_chunks)
+                print(f"[TopicPlanner] Selected informative chunk {c.id} from instruction filter")
+                return c, self.get_chunk_author(c)
+            else:
+                print(f"[TopicPlanner] All {len(chunks)} instruction matches were non-informative. Falling back.")
 
         # Step 1: Query student state for this quiz
         states_exist = self.db.query(StudentConceptState).filter_by(
@@ -48,7 +82,10 @@ class TopicPlanner:
 
         if not states_exist:
             # Fallback to rotation for first question
-            return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=instruction_chunk_ids)
+            res_c, res_a = self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=instruction_chunk_ids, selected_document_ids=selected_document_ids)
+            if res_c and not is_informative(res_c):
+                 print(f"[TopicPlanner] Fallback chunk {res_c.id} was not informative, trying another...")
+            return res_c, res_a
 
         # Step 2: Priority Ordering
         target_concept = None
@@ -127,15 +164,36 @@ class TopicPlanner:
             if instruction_chunk_ids:
                 search_query = search_query.filter(Chunk.id.in_(instruction_chunk_ids))
             
-            chosen_chunk = search_query.first()
-            if chosen_chunk:
-                return chosen_chunk, self.get_chunk_author(chosen_chunk)
+            # Apply document selection filter
+            if selected_document_ids:
+                search_query = search_query.filter(Chunk.document_id.in_(selected_document_ids))
+            
+            rotation_chunks = search_query.limit(20).all()
+            
+            def _is_info(c_obj):
+                if not c_obj or not c_obj.content: return False
+                content = c_obj.content.strip()
+                if len(content) < 180: return False
+                forbidden = ["HKUST Business School", "Case Studies", "Center for Business Case Studies"]
+                if any(f.lower() in content.lower() for f in forbidden) and len(content) < 350:
+                    return False
+                return True
+
+            for candidate in rotation_chunks:
+                if _is_info(candidate):
+                    print(f"[TopicPlanner] Found informative fallback chunk {candidate.id}")
+                    return candidate, self.get_chunk_author(candidate)
+
+            if rotation_chunks:
+                return rotation_chunks[0], self.get_chunk_author(rotation_chunks[0])
 
         # Final Fallback
-        return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=instruction_chunk_ids)
+        return self._select_by_rotation(course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=instruction_chunk_ids, selected_document_ids=selected_document_ids)
 
-    def _select_by_rotation(self, course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=None):
+    def _select_by_rotation(self, course_id, enrollment_id, quiz_id, filter_keywords, used_chunk_ids, preferred_section_id, instruction_chunk_ids=None, selected_document_ids=None):
         """Original rotation logic moved here for fallback. Supports instruction-based filtering."""
+        if not selected_document_ids:
+            return None, None
         import random
         import hashlib
         from ..database.models.transcript import Transcript
@@ -177,6 +235,9 @@ class TopicPlanner:
                     # Apply instruction topic filter
                     if instruction_chunk_ids:
                         chunk_query = chunk_query.filter(Chunk.id.in_(instruction_chunk_ids))
+                    # Apply document selection filter
+                    if selected_document_ids:
+                        chunk_query = chunk_query.filter(Chunk.document_id.in_(selected_document_ids))
                     available_chunks = chunk_query.all()
                     for chunk in available_chunks:
                         sid = section.id
@@ -189,6 +250,8 @@ class TopicPlanner:
             )
             if instruction_chunk_ids:
                 fallback_query = fallback_query.filter(Chunk.id.in_(instruction_chunk_ids))
+            if selected_document_ids:
+                fallback_query = fallback_query.filter(Chunk.document_id.in_(selected_document_ids))
             fallback = fallback_query.all()
             if not fallback: return None, None
             c = random.choice(fallback)
@@ -210,7 +273,7 @@ class TopicPlanner:
         if not chosen_chunk: return None, None
         return chosen_chunk, self.get_chunk_author(chosen_chunk)
 
-    def _get_instruction_filtered_chunks(self, instructions: str, course_id: int, top_k: int = 30) -> list:
+    def _get_instruction_filtered_chunks(self, instructions: str, course_id: int, top_k: int = 30, selected_document_ids=None) -> list:
         """
         Uses vector search to find chunks semantically related to the professor's instructions.
         Returns a list of chunk IDs that match the instruction topic.
@@ -227,15 +290,17 @@ class TopicPlanner:
                 query=instructions,
                 top_k=top_k,
                 chunk_types=[ChunkType.SMALL, ChunkType.MEDIUM],
-                course_id=course_id
+                course_id=course_id,
+                selected_document_ids=selected_document_ids
             )
 
             if matching_chunks:
                 chunk_ids = [c.id for c in matching_chunks]
-                # Also include parent chunks of SMALL hits
+                # Also include parent chunks of hits ONLY IF they follow selection
                 for c in matching_chunks:
                     if c.parent_chunk_id and c.parent_chunk_id not in chunk_ids:
-                        chunk_ids.append(c.parent_chunk_id)
+                        if not selected_document_ids or c.document_id in selected_document_ids:
+                            chunk_ids.append(c.parent_chunk_id)
                 return chunk_ids
             return None
         except Exception as e:
@@ -272,29 +337,14 @@ class TopicPlanner:
 
 
     def get_chunk_author(self, chunk):
-        """Identify the author from chunk content or section title."""
-        if not chunk:
+        """Identify the author from the document metadata."""
+        if not chunk or not chunk.document:
             return "the author"
         
-        # Check chunk content AND section/subsection titles for author names
-        search_text = chunk.content[:1000].lower()
-        if chunk.subsection:
-            search_text += " " + (chunk.subsection.title or "").lower()
-            if chunk.subsection.section:
-                search_text += " " + (chunk.subsection.section.title or "").lower()
-        
-        author_map = {
-            "anjaria": "Anjaria", "shapiro": "Shapiro",
-            "chatterjee": "Chatterjee", "held": "Held", 
-            "scott": "Scott", "gupta": "Gupta",
-            "ferguson": "Ferguson", "palshikar": "Palshikar", 
-            "jeffrey": "Jeffrey", "mehta": "Mehta",
-            "khosla": "Khosla", "vaishnav": "Vaishnav"
-        }
-        
-        for key, display in author_map.items():
-            if key in search_text:
-                return display
+        # Use the dynamically extracted author from ingestion
+        if chunk.document.author and chunk.document.author != "the author":
+            return chunk.document.author
+            
         return "the author"
 
     def _needs_more_exploration(self, subsection_id: int) -> bool:

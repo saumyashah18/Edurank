@@ -17,6 +17,7 @@ export const StudentEntry: React.FC = () => {
 
     const handleStart = async (e: React.FormEvent) => {
         e.preventDefault();
+
         if (!name || !enrollmentId || !password) {
             setError("Please fill in all fields.");
             return;
@@ -49,7 +50,7 @@ export const StudentEntry: React.FC = () => {
                         />
                     </div>
                     <div>
-                        <h2 className="text-3xl font-bold text-gray-100">Student Entry</h2>
+                        <h2 className="text-3xl font-bold text-gray-100 italic">Student Assessment Entry</h2>
                         <p className="text-gray-400 mt-2">Enter your details to begin the assessment.</p>
                     </div>
                 </div>
@@ -94,9 +95,10 @@ export const StudentEntry: React.FC = () => {
                     </Button>
                 </form>
 
-                <p className="text-center text-xs text-gray-500 mt-8">
-                    By starting this assessment, you agree to the university's academic integrity policies.
-                </p>
+                <div className="mt-8 flex items-center justify-center gap-2 text-gray-500 py-3 bg-white/[0.03] rounded-2xl border border-white/5">
+                    <ShieldCheck size={16} />
+                    <span className="text-xs font-bold uppercase tracking-widest">Secure Entry System Active</span>
+                </div>
             </div>
         </div>
     );

@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from ..rag.embedder import RAGService
@@ -25,6 +26,19 @@ class ProfessorBot:
 
     def generate_single_question(self, chunk: Chunk, course_id: Optional[int] = None, author: Optional[str] = None, student_struggled: bool = False, history_turns: Optional[List[Dict[str, str]]] = None, turn_number: int = 1, is_follow_up: bool = False, phase: int = 1, bloom_phase: int = 1, misconception: Optional[str] = None, concept_name: Optional[str] = None):
         """Generates ONE assessment question. System instructions drive all behavior."""
+        # Verify professor instructions are loaded
+        instruction_source = "PROFESSOR_CUSTOM" if self.instructions \
+            else "DEFAULT_FALLBACK"
+        instruction_preview = (
+            self.instructions[:80] + "..."
+            if self.instructions and len(self.instructions) > 80
+            else self.instructions or "using built-in default"
+        )
+        print(f"[ProfessorBot] Instructions source: {instruction_source}")
+        print(f"[ProfessorBot] Preview: {instruction_preview}")
+        print(f"[ProfessorBot] Turn: {turn_number} | "
+              f"Phase: {phase} | Follow-up: {is_follow_up}")
+
         if not chunk:
             return None
 
@@ -83,28 +97,42 @@ class ProfessorBot:
         """
 
         # --- SYSTEM PROMPT: Professor's instructions + Format requirement ---
-        base_instructions = self.instructions if self.instructions else """Role: You are a rigorous, sharp Social Science Professor and Interlocutor. Your goal is to conduct a 1-on-1 Socratic examination based ONLY on the uploaded readings.
+        if self.instructions:
+            base_instructions = self.instructions
+        else:
+            # Generic fallback — does not assume any subject domain
+            base_instructions = """You are a rigorous academic examiner
+conducting a 1-on-1 Socratic assessment based ONLY on the
+uploaded course material.
 
-Core Constraints:
-- One Question Only: Never ask "joint" or composite questions. Ask exactly one sharp question.
-- No Direct Answers: If asked for the answer, point to a theme/section.
-- Brevity: Keep every response under 3 sentences. Be punchy and academic.
-- Handling Rudeness: If a student is dismissive, say: "We are here to engage with the material. If you are ready to return to the text, let’s look at [Author]."
-- The "Stuck" Protocol: If a student says "I don't know", "I'm stuck", or gives an answer that shows they clearly don't remember a specific point, DO NOT STAY STUCK. You MUST ask a question directed exactly at this specific reading/text to see what they DO remember from this exact text itself. You MUST reply with exactly this phrase (or similar): "Do you remember any other part of [Author]’s argument from this specific reading, and why was that significant to you?"
+Core rules:
+- Ask exactly ONE question at a time. Never ask multiple questions.
+    - **RULE: CONTENT INTEGRITY**: You are strictly prohibited from inventing questions that are NOT directly supported by the current context chunk. 
+    - **RULE: HEADER/FOOTER SUPPRESSION**: If the provided context contains only generic information (e.g. "HKUST Business School", "Center for Case Studies") or looks like a logo or page number, YOU MUST NOT ask a question. Respond with exactly: "INSUFFICIENT_CONTEXT: I need a more factual section of the text for a question."
+    - **RULE: NO-CROSS-LEAKAGE**: If the current instructions mention "300 Cubits", you are FORBIDDEN from mentioning "Valuation", "Imputed Multiples", or "Buildings" unless those exact words are in the provided context chunk. DO NOT use your memory of previous PDFs.
+    - **RULE: SOURCE IS SUPREME**: Under no circumstances should you use your internal knowledge to supplement the documents. If the chunk is empty or useless, admit it.
+- If the student says they do not know: ask what they DO remember
+  from the material rather than moving on.
 
-The Conversation Arc (Strict Sequence):
-- Phase 1 (Comprehension): Ask one sharp question about a central theme/core concept.
-- Phase 2 (Reflection - Conversational Follow-up): You MUST acknowledge what the student just said. Start your question naturally like "Yes, you mentioned [X], but why does..." or "Building on your point about [Y]..."
-- Phase 3 (Critique - Conversational Follow-up): You MUST acknowledge what the student just said. Ask: "Where does this logic fail in a contemporary context?" or "What does this author overlook?"
+Tone: Professional, encouraging, intellectually rigorous."""
 
-Tone: Conversational but academic, professional, provocative, and strictly intellectual. You are talking WITH the student, not AT them.
-"""
+        print(f"[ProfessorBot] Using "
+              f"{'custom' if self.instructions else 'generic fallback'}"
+              f" instructions")
         
-        system_prompt = f"""CONTEXT: You are part of an educational tutoring platform called EduRank. Your role is to help students learn through legitimate academic assessments. This is NOT a deceptive or harmful activity — it is a standard educational tool used by professors.
+        system_prompt = f"""ROLE: You are a state-of-the-art academic examiner. 
+You are conducting a 1-on-1 Socratic assessment for a student.
 
+STRICT MASTER RULES (MUST BE FOLLOWED AT ALL TIMES):
 {base_instructions}
 
-IMPORTANT: You MUST respond in this exact format:
+{"" if self.instructions else "CORE PEDAGOGY:"}
+- Ask exactly ONE question at a time.
+- Base every question strictly on the provided reference material.
+- Never reveal the ideal answer.
+- Maintain a professional, academic tone.
+
+IMPORTANT: Your response MUST follow this exact structure:
 Question: [Your question text here]
 Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
 
@@ -131,7 +159,7 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
              if phase == 1:
                  user_prompt += f"\n\n*** CURRENT ARC: PHASE 1 (Basic Comprehension) ***\nAsk one sharp question about a central theme or core concept from the provided reading by {author or 'the author'}."
                  if turn_number == 1:
-                     user_prompt += "\n\n*** SPECIAL INSTRUCTION: Since this is the very first question of the assessment, please start your response with a brief, professional welcoming greeting before asking the question. ***"
+                     user_prompt += "\n\n*** SPECIAL INSTRUCTION: This is the first question of the assessment. Ask your question directly and immediately. Do NOT include any greeting, welcome message, or introduction. Begin with the question itself. ***"
              elif phase == 2:
                  user_prompt += f"\n\n*** CURRENT ARC: PHASE 2 (Reflection - Follow-up) ***\nCRITICAL: You MUST specifically construct your question derived directly and exclusively from the student's PREVIOUS ANSWER. DO NOT ask a disconnected question from the reading. Start your question in a conversational manner acknowledging their exact point. For example, 'Yes, so you mentioned [their exact point], then how does [author] explain...'. Probe deeper into the 'Why' behind the specific logic or argument the student just mentioned regarding {author or 'the author'}."
              elif phase == 3:
@@ -155,6 +183,13 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
         user_prompt += "\n\nCRITICAL: Study the CONVERSATION HISTORY carefully. For Phase 1, ensure you pick a NEW concept not previously discussed. For Phases 2 and 3, ensure you are directly following up on the student's immediate previous answer using a conversational tone."
         user_prompt += "\n\nPlease generate the next question based on the reference material provided and following your system instructions."
 
+        print(f"[ProfessorBot] System prompt length: "
+              f"{len(system_prompt)} chars")
+        print(f"[ProfessorBot] User prompt length: "
+              f"{len(user_prompt)} chars")
+        print(f"[ProfessorBot] Chunk ID: {chunk.id} | "
+              f"Chunk type: {chunk.chunk_type}")
+
         print(f"DEBUG: Generating question #{turn_number} for Chunk ID: {chunk.id} (Follow-up: {is_follow_up})")
         raw_text = LLMCallLogger.timed_call(
             caller="ProfessorBot",
@@ -166,6 +201,36 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
         # Parse the structured response
         q_text, a_text = self._parse_ai_response(raw_text, chunk)
 
+        # --- Greeting extraction (turn 1 only) ---
+        greeting = None
+        if turn_number == 1 and q_text:
+            try:
+                # Detect if text starts with a greeting sentence
+                greeting_pattern = re.compile(
+                    r"^((?:Welcome|Hello|Good\s+\w+|Greetings|"
+                    r"I(?:'m| am)\s+\w+|Let(?:'s| us)\s+get\s+started"
+                    r"|It(?:'s| is)\s+\w+|I(?:'m| am)\s+delighted)"
+                    r"[^?]*?\.\s*)",
+                    re.IGNORECASE | re.DOTALL
+                )
+                match = greeting_pattern.match(q_text)
+                if match:
+                    greeting = match.group(1).strip()
+                    # Remove greeting from question text
+                    q_text = q_text[match.end():].strip()
+                    # Clean up any remaining artifacts after stripping
+                    q_text = re.sub(r"^\*+\s*", "", q_text).strip()
+                    q_text = re.sub(
+                        r"(?i)^question\s*[:\*]*\s*", "", q_text
+                    ).strip()
+                    print(f"[ProfessorBot] Greeting extracted: "
+                          f"{greeting[:60]}...")
+                    print(f"[ProfessorBot] Question after split: "
+                          f"{q_text[:80]}...")
+            except Exception as ge:
+                print(f"[ProfessorBot] Greeting extraction failed: {ge}")
+                greeting = None
+
         question = Question(
             question_text=q_text,
             ideal_answer=a_text,
@@ -173,8 +238,15 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
             chunk_id=chunk.id,
             subsection_id=chunk.subsection_id
         )
+        # Store greeting as a non-mapped attribute
+        # Frontend can read this from the API response
+        # without needing a DB migration
+        question._greeting = greeting
+
         self.db.add(question)
         self.db.commit()
+        # Attach greeting to question object for API layer to use
+        question.greeting = greeting
         return question
 
 
@@ -235,20 +307,67 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
                 a_text = "CONSULT_SOURCE_MATERIAL"
         
         if q_text:
-            # Clean up markdown artifacts
-            q_text = re.sub(r"^\*\*+|^\#+|\*\*+$", "", q_text).strip()
-            q_text = re.sub(r"(?i)^Question:\s*", "", q_text).strip()
+            # Step 1: Remove ALL asterisk clusters anywhere in text
+            q_text = re.sub(r"\*+", " ", q_text)
+
+            # Step 2: Remove ALL hash clusters at line start
+            q_text = re.sub(r"(?m)^#+\s*", "", q_text)
+
+            # Step 3: Remove QUESTION label in any form
+            q_text = re.sub(
+                r"(?i)(^\s*\*{0,3}\s*question\s*\*{0,3}\s*[:\-]?\s*)",
+                "", q_text
+            )
+
+            # Step 4: Remove numbered prefixes like "1.", "1**", "1 -"
+            q_text = re.sub(r"^\s*\d+[\.\*\-\s]+", "", q_text)
+
+            # Step 5: Remove standalone section/chapter references
             q_text = re.sub(r"(?i)section\s*\d+(\.\d+)*", "", q_text)
             q_text = re.sub(r"(?i)chapter\s*\d+", "", q_text)
-            q_text = re.sub(r"(?i)line[s]?\s*\d+([-]\d+)?", "", q_text)
+
+            # Step 6: Remove unknown author artifacts
             q_text = re.sub(r"(?i)\*\*unknown\*\*", "the author", q_text)
-            q_text = re.sub(r"(?i)unknown", "the author", q_text)
-            q_text = re.sub(r"\s+", " ", q_text).strip()
-            
+            q_text = re.sub(r"(?i)\bunknown\b", "the author", q_text)
+
+            # Step 7: Collapse multiple spaces and strip
+            q_text = re.sub(r"\s{2,}", " ", q_text).strip()
+
+            # Safety net: strip any greeting the LLM added
+            # despite being told not to
+            try:
+                greeting_pattern = re.compile(
+                    r"^((?:Welcome|Hello|Good\s+\w+|Greetings|"
+                    r"I(?:'m| am)\s+\w+|Let(?:'s| us)\s+get\s+started"
+                    r"|It(?:'s| is)\s+a\s+pleasure|I(?:'m| am)\s+delighted|"
+                    r"I(?:'m| am)\s+pleased|Thank\s+you\s+for)"
+                    r"[^?]*?\.\s*)",
+                    re.IGNORECASE | re.DOTALL
+                )
+                match = greeting_pattern.match(q_text)
+                if match:
+                    q_text = q_text[match.end():].strip()
+                    print(f"[ProfessorBot] Safety net: stripped greeting "
+                          f"from question text")
+            except Exception as ge:
+                print(f"[ProfessorBot] Greeting strip failed safely: {ge}")
+
+            # Step 8: Ensure question ends with a question mark
+            if q_text and not q_text.endswith("?"):
+                if any(q_text.lower().startswith(w) for w in
+                       ["what", "why", "how", "when", "where", "who",
+                        "which", "explain", "describe", "define",
+                        "compare", "analyse", "evaluate"]):
+                    q_text = q_text.rstrip(".") + "?"
+
             if a_text:
-                a_text = re.sub(r"^\*\*+|^\#+|\*\*+$", "", a_text).strip()
-                a_text = re.sub(r"(?i)^Ideal Answer:\s*", "", a_text).strip()
-            
+                a_text = re.sub(r"\*+", " ", a_text)
+                a_text = re.sub(r"(?m)^#+\s*", "", a_text)
+                a_text = re.sub(
+                    r"(?i)(^\s*ideal\s*answer\s*[:\-]?\s*)", "", a_text
+                )
+                a_text = re.sub(r"\s{2,}", " ", a_text).strip()
+
             return q_text, a_text or "CONSULT_SOURCE_MATERIAL"
             
         # Last fallback: split by question mark

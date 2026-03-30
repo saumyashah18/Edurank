@@ -56,6 +56,7 @@ class Document(BaseModel):
 
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     filename = Column(String, nullable=False)
+    author = Column(String, nullable=True)  # Dynamically extracted author
     ingestion_status = Column(String, default=IngestionStatus.PENDING)
     ingestion_error = Column(Text, nullable=True)
     is_ingesting = Column(Boolean, default=False)

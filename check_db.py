@@ -16,20 +16,21 @@ session = Session()
 
 try:
     # Check Chunks
-    print("--- CHUNK COUNTS BY AUTHOR KEYWORDS ---")
-    authors = [
-        "Held", "Scott", "Anjaria", "Ferguson", "Gupta", 
-        "Khosla", "Vaishnav", "Chatterjee", "Palshikar", 
-        "Jeffrey", "Mehta"
-    ]
-    
     total_chunks = session.execute(text("SELECT COUNT(*) FROM chunks")).scalar()
     print(f"Total Chunks: {total_chunks}")
 
-    for auth in authors:
-        # Simple LIKE query to check content coverage
-        count = session.execute(text(f"SELECT COUNT(*) FROM chunks WHERE content LIKE '%{auth}%'")).scalar()
-        print(f"{auth}: {count}")
+    # Check Authors from Documents
+    print("\n--- IDENTIFIED AUTHORS ---")
+    authors = session.execute(text("SELECT DISTINCT author FROM documents WHERE author IS NOT NULL")).fetchall()
+    if authors:
+        for auth_row in authors:
+            auth = auth_row[0]
+            count = session.execute(text(
+                "SELECT COUNT(*) FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.author = :auth"
+            ), {"auth": auth}).scalar()
+            print(f"- {auth}: {count} chunks")
+    else:
+        print("No authors identified yet.")
 
     # Check Relations
     print("\n--- KNOWLEDGE RELATIONS ---")

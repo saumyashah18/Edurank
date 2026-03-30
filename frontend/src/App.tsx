@@ -7,6 +7,8 @@ import { ManageAssessment } from './pages/ManageAssessment';
 import { StudentEntry } from './pages/StudentEntry';
 import { StudentQuiz } from './pages/StudentQuiz';
 
+import { StudentPortal } from './pages/StudentPortal';
+
 function App() {
   return (
     <AuthProvider>
@@ -17,6 +19,7 @@ function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/professor/create" element={<ProfessorDashboard />} />
           <Route path="/professor/manage/:quizId" element={<ManageAssessment />} />
+          <Route path="/student/quiz" element={<StudentPortal />} />
           <Route path="/student/quiz/:quizId" element={<StudentEntry />} />
           <Route path="/student/quiz/:quizId/active" element={<StudentQuiz />} />
           <Route path="/" element={<Navigate to="/login" replace />} />

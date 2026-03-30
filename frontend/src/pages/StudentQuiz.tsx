@@ -5,14 +5,13 @@ import {
     Mic, MicOff, Send,
     CheckCircle2,
     Volume2, Pencil,
-    User, Timer, Loader2
+    User, Timer, Loader2, Sigma
 } from 'lucide-react';
 import { useLocation, useParams } from 'react-router-dom';
 import client, { api } from '../api/client';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useSpeechToText } from '../hooks/useSpeechToText';
-import 'mathlive';
-import { Keyboard } from 'lucide-react';
+import { MathPalette } from '../components/MathPalette';
 import { normalizeMathTranscript } from '../utils/mathNormalizer';
 
 export const StudentQuiz: React.FC = () => {
@@ -30,6 +29,7 @@ export const StudentQuiz: React.FC = () => {
     const [currentQuestionId, setCurrentQuestionId] = useState<number | null>(null);
     const [aiEvalSummary, setAiEvalSummary] = useState<any>(null);
     const [loadingEval, setLoadingEval] = useState(false);
+    const [showMathPalette, setShowMathPalette] = useState(false);
 
     // Voice State
     const [isProcessingAudio, setIsProcessingAudio] = useState(false);
@@ -41,20 +41,29 @@ export const StudentQuiz: React.FC = () => {
     const mathfieldRef = React.useRef<any>(null);
 
     const [isMathMode, setIsMathMode] = useState(false);
+    const baseAnswerRef = useRef(answer);
 
     // Voice Hooks
-    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
     const { isRecording: isAudioRecording, startRecording, stopRecording } = useAudioRecorder();
-
-    const baseAnswerRef = useRef("");
+    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const initialTextRef = useRef('');
     const { isListening, startListening, stopListening: stopSTT } = useSpeechToText({
         onResult: (text) => {
-            const prefix = baseAnswerRef.current.trim();
-            // Convert spoken words like "equals" and "plus" to actual math operators in math mode
-            const formattedText = isMathMode ? normalizeMathTranscript(text) : text;
+            const prefix = initialTextRef.current.trim();
+            const formattedText = normalizeMathTranscript(text);
             setAnswer(prefix ? prefix + " " + formattedText : formattedText);
         }
     });
+
+    const toggleSpeech = async () => {
+        if (isListening) {
+            stopSTT();
+        } else {
+            // Store existing text so we can append to it
+            initialTextRef.current = answer;
+            startListening();
+        }
+    };
 
     const isRecording = hasSpeechRecognition ? isListening : isAudioRecording;
 
@@ -132,12 +141,35 @@ export const StudentQuiz: React.FC = () => {
         }
     }, [answer, isMathMode]);
 
+    const insertMath = (symbol: string) => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const before = answer.substring(0, start);
+        const after = answer.substring(end);
+
+        const newText = before + symbol + after;
+        setAnswer(newText);
+        
+        // Focus back and set cursor
+        setTimeout(() => {
+            textarea.focus();
+            const newPos = start + symbol.length;
+            textarea.setSelectionRange(newPos, newPos);
+        }, 10);
+    };
+
     useEffect(() => {
         if (isMathMode && mathfieldRef.current) {
             try {
                 mathfieldRef.current.setOptions({
                     smartMode: true,
-                    mathModeSpace: '\\;'
+                    mathModeSpace: '\\;',
+                    virtualKeyboardMode: 'onfocus',
+                    virtualKeyboards: 'all',
+                    virtualKeyboardTheme: 'apple' // Premium aesthetic
                 });
             } catch (e) {
                 // Ignore if options are unsupported in older mathlive
@@ -332,23 +364,6 @@ export const StudentQuiz: React.FC = () => {
                 enrollment_id: studentInfo.enrollmentId
             });
 
-            if (res.data?.hint || res.data?.misconception || res.data?.recommended_action) {
-                let aiFeedback = "";
-                if (res.data.misconception) aiFeedback += `💡 **Correction:** ${res.data.misconception}\n\n`;
-                if (res.data.hint) aiFeedback += `🔍 **Hint:** ${res.data.hint}\n\n`;
-                if (res.data.recommended_action) aiFeedback += `🎯 **Suggestion:** ${res.data.recommended_action}`;
-                
-                if (aiFeedback.trim()) {
-                    setMessages(prev => [...prev, {
-                        id: Date.now().toString() + "-feedback",
-                        role: 'bot',
-                        text: aiFeedback.trim(),
-                        context: "Immediate Feedback"
-                    }]);
-                    await new Promise(r => setTimeout(r, 1500));
-                }
-            }
-
             const timeRemaining = timeLeftRef.current;
             const reachedQuestionLimit = totalQuestionsLimit > 0 && currentQuestionIdx >= totalQuestionsLimit;
             const notEnoughTime = timeRemaining !== null && timeRemaining <= 10;
@@ -409,56 +424,6 @@ export const StudentQuiz: React.FC = () => {
                     <p className="text-gray-400 max-w-md">
                         Thank you, {studentInfo?.name}. Your responses have been recorded and sent to your professor.
                     </p>
-
-                    {loadingEval ? (
-                        <div className="flex items-center gap-2 mt-4 text-accent">
-                            <Loader2 size={16} className="animate-spin" />
-                            <span className="text-sm">Fetching your evaluation...</span>
-                        </div>
-                    ) : aiEvalSummary ? (
-                        <div className="mt-8 bg-white/[0.03] border border-white/10 rounded-[24px] p-8 max-w-2xl w-full text-left">
-                            <div className="flex items-center justify-between mb-6 pb-6 border-b border-white/10">
-                                <h3 className="text-xl font-bold text-gray-100 flex items-center gap-2">
-                                    <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                                    AI Evaluation Summary
-                                </h3>
-                                <div className="text-right">
-                                    <span className="text-sm text-gray-400 uppercase tracking-widest font-bold">Total Score</span>
-                                    <div className="text-3xl font-mono font-bold text-accent">
-                                        {aiEvalSummary.grand_total_awarded} <span className="text-lg text-gray-500">/ {aiEvalSummary.grand_total_max}</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="flex flex-col gap-4">
-                                {aiEvalSummary.per_question.map((q: any, i: number) => (
-                                    <div key={i} className="bg-black/20 rounded-xl p-4 border border-white/5">
-                                        <div className="flex justify-between items-start mb-2">
-                                            <h4 className="text-sm font-semibold text-gray-200">Q{q.question_number} Score</h4>
-                                            <span className="font-mono text-accent text-sm">{q.total_awarded}/{q.total_max}</span>
-                                        </div>
-                                        {q.overall_remark && (
-                                            <p className="text-xs text-gray-400 italic mb-3">"{q.overall_remark}"</p>
-                                        )}
-                                        {q.criteria_scores && q.criteria_scores.length > 0 && (
-                                            <div className="mt-3 pt-3 border-t border-white/10 flex flex-col gap-2">
-                                                <h5 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-1">Rubric Details</h5>
-                                                {q.criteria_scores.map((cs: any, idx: number) => (
-                                                    <div key={idx} className="flex flex-col gap-1">
-                                                        <div className="flex justify-between items-center">
-                                                            <span className="text-xs text-gray-300 font-medium">{cs.name}</span>
-                                                            <span className="text-xs font-mono text-accent">{cs.awarded}/{cs.max_marks}</span>
-                                                        </div>
-                                                        {cs.remark && <span className="text-[10px] text-gray-500">{cs.remark}</span>}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    ) : null}
 
                     <p className="text-gray-500 text-sm mt-8">
                         You may now close this window safely.
@@ -572,60 +537,50 @@ export const StudentQuiz: React.FC = () => {
                                 onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
                                 className="flex gap-3 items-end"
                             >
-                                {isMathMode ? (
-                                    <div className="flex-1 bg-white/[0.05] border border-accent/40 rounded-2xl px-4 py-3 min-h-[52px] shadow-inner font-mono text-lg overflow-x-auto overflow-y-hidden custom-scrollbar flex items-center">
-                                        {/* @ts-expect-error Custom MathLive web component */}
-                                        <math-field
-                                            ref={mathfieldRef}
-                                            style={{ width: '100%', minWidth: 'min-content', outline: 'none', background: 'transparent', color: 'white', border: 'none', fontSize: '1.2rem' }}
-                                            onInput={(e: any) => setAnswer(e.target.value)}
-                                            onKeyDown={(e: any) => {
-                                                if (e.key === 'Enter' && !e.shiftKey) {
-                                                    e.preventDefault();
-                                                    handleSubmit();
-                                                }
-                                            }}
-                                        />
-                                    </div> 
-                                ) : (
-                                    <textarea
-                                        ref={textareaRef}
-                                        value={answer}
-                                        onChange={e => setAnswer(e.target.value)}
-                                        placeholder={isRecording ? "Listening..." : isProcessingAudio ? "Processing voice..." : "Type your answer here..."}
-                                        disabled={loading || isSubmitting || isRecording || isProcessingAudio}
-                                        className={`flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-all resize-none overflow-y-auto overflow-x-hidden min-h-[52px] max-h-[200px] custom-scrollbar ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
-                                        rows={1}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && !e.shiftKey) {
-                                                e.preventDefault();
-                                                handleSubmit();
-                                            }
-                                        }}
-                                    />
-                                )}
+                                <textarea
+                                    ref={textareaRef}
+                                    value={answer}
+                                    onChange={e => setAnswer(e.target.value)}
+                                    placeholder={isRecording ? "Listening..." : isProcessingAudio ? "Processing voice..." : "Type your answer here..."}
+                                    disabled={loading || isSubmitting || isRecording || isProcessingAudio}
+                                    className={`flex-1 bg-white/[0.05] border-2 border-white/5 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent/50 transition-all resize-none overflow-y-auto overflow-x-hidden min-h-[56px] max-h-[200px] custom-scrollbar focus:bg-white/[0.08] ${isRecording ? 'border-red-500/50 bg-red-500/05 animate-pulse' : ''}`}
+                                    rows={1}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleSubmit();
+                                        }
+                                    }}
+                                />
                                 <div className="flex gap-2 mb-1">
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsMathMode(!isMathMode)}
-                                        className={`p-3 rounded-2xl transition-all ${isMathMode ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-white/[0.05] text-gray-400 hover:text-white hover:bg-white/10'}`}
-                                        title={isMathMode ? 'Switch to Normal Text' : 'Super Keyboard (Formulas)'}
-                                    >
-                                        <Keyboard size={20} />
-                                    </button>
+                                    <div className="relative">
+                                        {showMathPalette && (
+                                            <MathPalette 
+                                                onInsert={(s) => { insertMath(s); setShowMathPalette(false); }} 
+                                                onClose={() => setShowMathPalette(false)} 
+                                            />
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowMathPalette(!showMathPalette)}
+                                            className={`p-3 rounded-2xl transition-all ${showMathPalette ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-white/[0.05] text-gray-400 hover:text-white hover:bg-white/10'}`}
+                                            title="Math Palette (Add Symbols)"
+                                        >
+                                            <Sigma size={20} />
+                                        </button>
+                                    </div>
 
                                     {/* Microphone Button */}
                                     <button
                                         type="button"
-                                        onClick={handleVoiceInput}
-                                        disabled={loading || isSubmitting || isProcessingAudio}
-                                        className={`p-3 rounded-2xl transition-all ${isRecording
+                                        onClick={toggleSpeech}
+                                        className={`p-3 rounded-2xl transition-all shadow-md active:scale-95 ${isListening
                                             ? 'bg-red-500 text-white animate-pulse'
-                                            : 'bg-white/[0.05] text-gray-400 hover:text-white hover:bg-white/10'
+                                            : 'bg-white/[0.05] text-gray-400 hover:text-gray-200 hover:bg-white/10'
                                             }`}
-                                        title={isRecording ? 'Stop Recording' : 'Start Voice Input'}
+                                        title={isListening ? "Stop Listening" : "Start Speaking"}
                                     >
-                                        {isProcessingAudio ? <Loader2 size={20} /> : isRecording ? <MicOff size={20} /> : <Mic size={20} />}
+                                        {isListening ? <MicOff size={20} /> : <Mic size={20} />}
                                     </button>
 
                                     <Button

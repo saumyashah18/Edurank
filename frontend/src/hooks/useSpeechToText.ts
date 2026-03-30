@@ -49,8 +49,8 @@ export const useSpeechToText = (options: UseSpeechToTextOptions = {}) => {
                 setTranscript(fullTranscript);
                 setInterimTranscript(interim);
                 
-                // Only trigger onResult for final segments to avoid spamming
-                if (onResult && event.results[event.results.length - 1].isFinal) {
+                // Trigger onResult for every update (interim or final) for live feel
+                if (onResult) {
                     onResult(fullTranscript);
                 }
             };

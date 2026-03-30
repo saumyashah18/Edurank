@@ -7,6 +7,7 @@ from ..database.models.course import Course, IngestionStatus
 from ..rag.embedder import Embedder
 import os
 import magic
+from ..quiz.llm_service import llm
 
 
 class MaterialProcessor:
@@ -88,6 +89,27 @@ class MaterialProcessor:
             if not extracted_data:
                 self._fail(document, "Extraction produced no usable content.")
                 return
+
+            # ── STAGE 2.5: AUTHOR EXTRACTION ──
+            try:
+                # Use the first 2000 characters of extracted text or first chunk
+                sample_text = ""
+                if extracted_text:
+                    sample_text = extracted_text[:4000]
+                elif extracted_data:
+                    # Flatten first few chunks
+                    sample_text = "\n".join([
+                        s["content"] for c in extracted_data[:1] 
+                        for sec in c["sections"] 
+                        for s in sec["subsections"]
+                    ])[:4000]
+                
+                if sample_text:
+                    document.author = self._extract_author(sample_text)
+                    print(f"[*] Identified document author: {document.author}")
+            except Exception as ae:
+                print(f"[!] Author extraction failed (non-fatal): {ae}")
+                document.author = "the author"
 
             # ── STAGE 3: CHUNKING + EMBEDDING (inside _store_hierarchy) ──
             self._set_status(document, IngestionStatus.CHUNKING)
@@ -512,6 +534,29 @@ class MaterialProcessor:
                 }]
             })
         return chapters
+
+    # ------------------------------------------------------------------
+    #  STAGE 2.5: AUTHOR EXTRACTION (LLM)
+    # ------------------------------------------------------------------
+
+    def _extract_author(self, text: str) -> str:
+        """Uses LLM to identify the main author of the text."""
+        system_prompt = (
+            "You are a metadata extraction assistant. "
+            "Identify the main author's name from the provided text excerpt. "
+            "Respond ONLY with the author's last name or full name. "
+            "If not found, respond with 'the author'."
+        )
+        prompt = f"Identify the primary author of this text:\n\n{text[:2000]}"
+        
+        try:
+            # Using fast mode (Hugging Face) for metadata tasks
+            result = llm.generate_content_fast(prompt, system_prompt=system_prompt)
+            if "ERROR" in result or len(result) > 50:
+                return "the author"
+            return result.strip()
+        except Exception:
+            return "the author"
 
     # ------------------------------------------------------------------
     #  STORE HIERARCHY (preserved from original — only status tracking added)

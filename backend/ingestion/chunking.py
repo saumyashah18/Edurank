@@ -302,6 +302,18 @@ class Chunker:
 
     def _create_chunks(self, subsection_id: int, text_list: List[str], chunk_type: ChunkType, course_id: Optional[int] = None, document_id: Optional[int] = None):
         for text in text_list:
+            stripped = text.strip()
+            # JUNK FILTER: Skip purely non-informative fragments
+            if len(stripped) < 150:
+                # If it's very short, check if it's just a header or logo text
+                is_junk_header = _is_heading(stripped) or _is_caption(stripped)
+                generic_keywords = ["HKUST", "Business School", "Center for", "Case Study", "Note", "Page", "Copyright"]
+                is_generic = any(kw.lower() in stripped.lower() for kw in generic_keywords)
+                
+                if is_junk_header or is_generic:
+                    print(f"[Chunking] Skipping non-informative chunk: '{stripped[:50]}...'")
+                    continue
+
             chunk = Chunk(
                 content=text,
                 chunk_type=chunk_type,

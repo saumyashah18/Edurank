@@ -3,16 +3,19 @@ import {
     FileText, Trash2,
     RefreshCw, Lock,
     ThumbsUp, ThumbsDown, Copy, Mic, MicOff, Infinity, Pencil,
-    Check, Globe, Loader2
+    Check, Globe, Loader2, AlertCircle, Sigma
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Layout } from '../components/Layout';
+import { MathPalette } from '../components/MathPalette';
 import client, { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { useSpeechToText } from '../hooks/useSpeechToText';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { normalizeMathTranscript } from '../utils/mathNormalizer';
 
 interface LibraryDocument {
     id: number;
@@ -41,11 +44,17 @@ export const ProfessorDashboard: React.FC = () => {
     const [questionCount, setQuestionCount] = useState(10);
     const { user } = useAuth();
     const [allowAudio, setAllowAudio] = useState(true);
+    const [selectedDocumentIds, setSelectedDocumentIds] = useState<number[]>([]);
     
     // AI Evaluation State
     const [aiEvalEnabled, setAiEvalEnabled] = useState(false);
     const [rubricCriteria, setRubricCriteria] = useState<{ id: string; name: string; marks: number }[]>([]);
     
+    const location = useLocation();
+    const navigate = useNavigate();
+    const searchParams = new URLSearchParams(location.search);
+    const isNewRequest = searchParams.get('new') === 'true';
+
     const handleAddCriterion = () => {
         setRubricCriteria(prev => [...prev, { id: Date.now().toString(), name: '', marks: 5 }]);
     };
@@ -61,6 +70,39 @@ export const ProfessorDashboard: React.FC = () => {
     // Calculate total marks from rubric if enabled, otherwise use the static score
     const totalRubricMarks = rubricCriteria.reduce((sum, c) => sum + (Number(c.marks) || 0), 0);
     const effectiveMarks = aiEvalEnabled && rubricCriteria.length > 0 ? totalRubricMarks : marks;
+
+    const handleNewAssessment = async () => {
+        if (!window.confirm("Start a new assessment? This will clear all unsaved drafts.")) return;
+        
+        setExamName('');
+        setExamDesc('');
+        setInstructions('');
+        setDuration(60);
+        setMarks(100);
+        setQuestionLimit('specific');
+        setQuestionCount(10);
+        setAllowAudio(true);
+        setAiEvalEnabled(false);
+        setRubricCriteria([]);
+        setSelectedDocumentIds([]);
+        setMessages([{ id: '1', role: 'bot', text: `✨ Welcome Professor ${user?.displayName || ''}! Let's build a new assessment.` }]);
+        setCurrentQuizId(null);
+        setFinalLink('');
+        setQuizPassword('');
+
+        try {
+            // Tell backend to clear the current draft for this course
+            await client.delete(`/professor/quiz/draft/1`);
+        } catch (err) {
+            console.error("Failed to clear draft", err);
+        }
+    };
+
+    const toggleDocument = (id: number) => {
+        setSelectedDocumentIds(prev => 
+            prev.includes(id) ? prev.filter(docId => docId !== id) : [...prev, id]
+        );
+    };
 
     // Editing State
     const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -87,26 +129,69 @@ export const ProfessorDashboard: React.FC = () => {
     const [quizPassword, setQuizPassword] = useState('');
     const [finalLink, setFinalLink] = useState('');
     const [currentQuizId, setCurrentQuizId] = useState<number | null>(null);
+    const [showMathPalette, setShowMathPalette] = useState(false);
+    const [isProcessingAudio, setIsProcessingAudio] = useState(false);
 
     const [seenQuestionIds, setSeenQuestionIds] = useState<number[]>([]);
     const [inputMessage, setInputMessage] = useState('');
+
+    // Reset simulation history when document selection changes to avoid context leakage
+    const selectionKey = JSON.stringify(selectedDocumentIds);
+    useEffect(() => {
+        // Clear history and seen question tracker when library selection changes
+        setSeenQuestionIds([]);
+        setMessages([
+            { id: '1', role: 'bot', text: `✨ Context changed! Fresh generation active for: ${libraryDocs.filter(d => selectedDocumentIds.includes(d.id)).map(d => d.filename).join(', ') || 'No documents selected'}.` }
+        ]);
+        console.log("[Simulation] History cleared due to selection change:", selectionKey);
+    }, [selectionKey]);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const initialTextRef = useRef('');
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
-
-    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
     const { isRecording: isAudioRecording, startRecording, stopRecording } = useAudioRecorder();
-    const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+    const hasSpeechRecognition = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
     const { isListening, startListening, stopListening: stopSTT } = useSpeechToText({
-        onResult: (transcript) => {
-            const initial = initialTextRef.current;
-            const spacer = initial && !initial.endsWith(' ') ? ' ' : '';
-            setInputMessage(initial + spacer + transcript);
+        onResult: (text) => {
+            // Normalize math/finance terms live
+            const normalized = normalizeMathTranscript(text);
+            // Append transcribed text to whatever was already in the box when we started
+            setInputMessage(initialTextRef.current ? `${initialTextRef.current} ${normalized}` : normalized);
         }
     });
+
+    const toggleSpeech = async () => {
+        if (isListening) {
+            stopSTT();
+        } else {
+            // Store existing text so we can append to it
+            initialTextRef.current = inputMessage;
+            startListening();
+        }
+    };
+
+    const insertMath = (symbol: string) => {
+        const textarea = inputRef.current;
+        if (!textarea) return;
+
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const text = inputMessage;
+        const before = text.substring(0, start);
+        const after = text.substring(end, text.length);
+
+        setInputMessage(before + symbol + after);
+        
+        // Focus back and set cursor
+        setTimeout(() => {
+            textarea.focus();
+            const newPos = start + symbol.length;
+            textarea.setSelectionRange(newPos, newPos);
+        }, 10);
+    };
+
 
     const isRecording = hasSpeechRecognition ? isListening : isAudioRecording;
 
@@ -157,6 +242,11 @@ export const ProfessorDashboard: React.FC = () => {
     // Fetch draft on mount
     useEffect(() => {
         (async () => {
+            if (isNewRequest) {
+                handleNewAssessment();
+                navigate('/professor/create', { replace: true });
+                return;
+            }
             try {
                 const { data } = await client.get('/professor/quiz/draft/1');
                 if (data.draft) {
@@ -173,6 +263,13 @@ export const ProfessorDashboard: React.FC = () => {
                     setInstructions(data.draft.instructions || "");
                     setAllowAudio(data.draft.allow_audio ?? true);
                     setAiEvalEnabled(data.draft.ai_eval_enabled ?? false);
+                    if (data.draft.selected_document_ids) {
+                        try {
+                            setSelectedDocumentIds(JSON.parse(data.draft.selected_document_ids));
+                        } catch (e) {
+                            console.error("Failed to parse selected docs", e);
+                        }
+                    }
                     if (data.draft.ai_eval_rubric) {
                         try {
                             const parsed = JSON.parse(data.draft.ai_eval_rubric);
@@ -222,7 +319,8 @@ export const ProfessorDashboard: React.FC = () => {
                     instructions,
                     allow_audio: allowAudio,
                     ai_eval_enabled: aiEvalEnabled,
-                    ai_eval_rubric: rubricJson
+                    ai_eval_rubric: rubricJson,
+                    selected_document_ids: JSON.stringify(selectedDocumentIds)
                 });
             } catch (error) {
                 console.error("Failed to auto-save draft", error);
@@ -230,7 +328,7 @@ export const ProfessorDashboard: React.FC = () => {
         }, 1500);
 
         return () => clearTimeout(timeout);
-    }, [examName, examDesc, duration, marks, questionLimit, questionCount, instructions, allowAudio, aiEvalEnabled, rubricCriteria, effectiveMarks]);
+    }, [examName, examDesc, duration, marks, questionLimit, questionCount, instructions, allowAudio, aiEvalEnabled, rubricCriteria, effectiveMarks, selectedDocumentIds]);
 
     const fetchLibrary = async () => {
         try {
@@ -338,7 +436,8 @@ export const ProfessorDashboard: React.FC = () => {
                     total_questions: questionLimit === 'infinite' ? -1 : questionCount,
                     allow_audio: allowAudio,
                     ai_eval_enabled: aiEvalEnabled,
-                    ai_eval_rubric: rubricJson
+                    ai_eval_rubric: rubricJson,
+                    selected_document_ids: JSON.stringify(selectedDocumentIds)
                 }
             });
             setCurrentQuizId(res.data.quiz_id);
@@ -363,7 +462,8 @@ export const ProfessorDashboard: React.FC = () => {
                     course_id: 1,
                     exclude_ids: seenQuestionIds.join(','),
                     history: historyStr,
-                    instructions: instructions // Pass current instructions from UI
+                    instructions: instructions,
+                    selected_document_ids: JSON.stringify(selectedDocumentIds)
                 }
             });
             if (data.reset) {
@@ -420,10 +520,39 @@ export const ProfessorDashboard: React.FC = () => {
         try {
             if (!currentQuizId) return alert("Please generate questions first before finalizing.");
             const quizId = currentQuizId;
+            
+            // Step 1: Force a final save of the configuration to ensure latest selections are in DB
+            let rubricJson = undefined;
+            if (aiEvalEnabled && rubricCriteria.length > 0) {
+                rubricJson = JSON.stringify({
+                    total_marks: effectiveMarks,
+                    criteria: rubricCriteria.map(c => ({ name: c.name, marks: Number(c.marks) }))
+                });
+            }
+
+            await client.post('/professor/quiz/draft/1', {
+                title: examName || "Untitled Assessment",
+                description: examDesc,
+                duration_minutes: duration,
+                total_marks: effectiveMarks,
+                total_questions: questionLimit === 'infinite' ? -1 : questionCount,
+                instructions,
+                allow_audio: allowAudio,
+                ai_eval_enabled: aiEvalEnabled,
+                ai_eval_rubric: rubricJson,
+                selected_document_ids: JSON.stringify(selectedDocumentIds)
+            });
+
+            // Step 2: Set password and lock the quiz
             await client.post(`/professor/quiz/${quizId}/finalize`, null, { params: { password: quizPassword } });
-            setFinalLink(`${window.location.origin}/student/quiz/${quizId}`);
+            
+            // Step 3: Refresh the link with the latest quiz ID
+            const newLink = `${window.location.origin}/student/quiz/${quizId}`;
+            setFinalLink(newLink);
+            alert("✨ Assessment is now LIVE. Link updated with latest changes!");
         } catch (err) {
-            alert("Finalization failed");
+            console.error("Finalization failed", err);
+            alert("Finalization failed: Check your connection or password settings.");
         }
     };
 
@@ -438,7 +567,10 @@ export const ProfessorDashboard: React.FC = () => {
 
     return (
         <Layout title="Create Assessment" onSave={() => setIsFinalizing(true)} saveLoading={false}>
-            <aside className="w-[400px] p-6 border-r border-border overflow-y-auto flex flex-col gap-6">
+            <aside className="w-[400px] p-6 border-r border-border overflow-y-auto flex flex-col gap-6 scrollbar-hide">
+                <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-lg font-bold text-gray-100 italic tracking-tight">Assessment Config</h3>
+                </div>
                 <Input label="Name" value={examName} onChange={e => setExamName(e.target.value)} placeholder="Give your assessment a name" />
                 <Input label="Description" multiline value={examDesc} onChange={e => setExamDesc(e.target.value)} placeholder="Describe your assessment" />
                 <Input label="Instructions" multiline value={instructions} onChange={e => setInstructions(e.target.value)} placeholder="e.g. Ask challenging questions about process scheduling" info="System instructions for the AI examiner" />
@@ -609,10 +741,23 @@ export const ProfessorDashboard: React.FC = () => {
                                 }
 
                                 return (
-                                    <li key={doc.id || idx} className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors">
+                                    <li 
+                                        key={doc.id || idx} 
+                                        onClick={() => toggleDocument(doc.id)}
+                                        className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${
+                                            selectedDocumentIds.includes(doc.id) 
+                                            ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20 shadow-[0_0_15px_rgba(30,132,255,0.1)]' 
+                                            : 'bg-white/[0.03] border-white/5 hover:bg-white/[0.06]'
+                                        }`}
+                                    >
                                         <div className="flex items-center gap-3 overflow-hidden">
-                                            <FileText size={18} className="text-accent shrink-0" />
-                                            <span className="text-sm text-gray-200 truncate pr-4">{doc.filename}</span>
+                                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                                                selectedDocumentIds.includes(doc.id) ? 'bg-accent border-accent' : 'bg-black/20 border-white/20'
+                                            }`}>
+                                                {selectedDocumentIds.includes(doc.id) && <Check size={10} className="text-white" />}
+                                            </div>
+                                            <FileText size={16} className={selectedDocumentIds.includes(doc.id) ? 'text-accent' : 'text-gray-500'} />
+                                            <span className={`text-sm truncate pr-4 ${selectedDocumentIds.includes(doc.id) ? 'text-white font-medium' : 'text-gray-400'}`}>{doc.filename}</span>
                                         </div>
                                         <div className="shrink-0 ml-4 flex items-center justify-end gap-3">
                                             {statusUI}
@@ -634,11 +779,12 @@ export const ProfessorDashboard: React.FC = () => {
                 <Button
                     onClick={handleGenerate}
                     loading={isGenerating}
-                    disabled={libraryDocs.length === 0 || libraryDocs.some(d => ['PENDING', 'VALIDATING', 'EXTRACTING', 'OCR_PROCESSING', 'CHUNKING', 'EMBEDDING'].includes(d.status))}
+                    disabled={selectedDocumentIds.length === 0 || libraryDocs.filter(d => selectedDocumentIds.includes(d.id)).some(d => ['PENDING', 'VALIDATING', 'OCR_PROCESSING', 'CHUNKING', 'EMBEDDING'].includes(d.status))}
                     icon={RefreshCw}
                     className="mt-4"
+                    title={selectedDocumentIds.length === 0 ? "Please select at least one document to generate questions" : ""}
                 >
-                    {isGenerating ? 'AI is generating...' : libraryDocs.some(d => ['PENDING', 'VALIDATING', 'EXTRACTING', 'OCR_PROCESSING', 'CHUNKING', 'EMBEDDING'].includes(d.status)) ? 'Processing Docs...' : 'Generate Questions'}
+                    {isGenerating ? 'AI is generating...' : libraryDocs.filter(d => selectedDocumentIds.includes(d.id)).some(d => ['PENDING', 'VALIDATING', 'OCR_PROCESSING', 'CHUNKING', 'EMBEDDING'].includes(d.status)) ? 'Processing Selection...' : 'Generate Questions'}
                 </Button>
             </aside>
 
@@ -734,14 +880,20 @@ export const ProfessorDashboard: React.FC = () => {
                     </div>
 
                     <div className="p-4 border-t border-border bg-white/[0.01]">
-                        <form onSubmit={handleSendMessage} className="flex gap-3 items-end">
+                        {selectedDocumentIds.length === 0 && (
+                            <div className="mb-3 px-3 py-2 bg-yellow-400/5 rounded-xl border border-yellow-400/20 flex items-center gap-2 text-yellow-400/80 text-[10px] uppercase tracking-widest font-bold animate-pulse">
+                                <AlertCircle size={12} />
+                                <span>Tick a document to enable AI interaction</span>
+                            </div>
+                        )}
+                        <form onSubmit={handleSendMessage} className={`flex gap-3 items-end transition-opacity ${selectedDocumentIds.length === 0 ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
                             <textarea
                                 ref={inputRef}
                                 value={inputMessage}
                                 onChange={(e) => setInputMessage(e.target.value)}
                                 placeholder="Type an answer to test AI adaptivity..."
                                 className="flex-1 bg-white/[0.05] border border-white/10 rounded-2xl px-6 py-3 text-sm text-gray-100 focus:outline-none focus:border-accent transition-colors resize-none overflow-hidden min-h-[52px] max-h-[200px]"
-                                disabled={isTyping}
+                                disabled={isTyping || selectedDocumentIds.length === 0}
                                 rows={1}
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter' && !e.shiftKey) {
@@ -751,6 +903,24 @@ export const ProfessorDashboard: React.FC = () => {
                                 }}
                             />
                             <div className="flex gap-2 mb-1">
+                                <div className="relative">
+                                    {showMathPalette && (
+                                        <MathPalette 
+                                            onInsert={(s) => { insertMath(s); setShowMathPalette(false); }} 
+                                            onClose={() => setShowMathPalette(false)} 
+                                        />
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowMathPalette(!showMathPalette)}
+                                        disabled={isTyping}
+                                        className={`p-3 rounded-2xl transition-all ${showMathPalette ? 'bg-accent text-white shadow-lg' : 'bg-white/[0.05] text-gray-400 hover:text-accent'}`}
+                                        title="Math Palette (Add Symbols)"
+                                    >
+                                        <Sigma size={18} />
+                                    </button>
+                                </div>
+
                                 <button
                                     type="button"
                                     onClick={handleVoiceInput}

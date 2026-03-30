@@ -25,7 +25,7 @@ def reset_system():
     print("Database recreated and seeded with default professor profile.")
 
     # 2. Clear Uploads folder
-    uploads_dir = os.path.join(os.path.dirname(__file__), "backend", "uploads")
+    uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
     if os.path.exists(uploads_dir):
         print(f"Clearing uploads directory: {uploads_dir}")
         for item in os.listdir(uploads_dir):

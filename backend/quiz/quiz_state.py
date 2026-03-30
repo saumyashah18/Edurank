@@ -30,6 +30,7 @@ class QuizState(TypedDict):
     session_phase: str                  # "opening", "middle", "closing"
     used_chunk_ids: List[int]
     instructions: Optional[str]         # Professor's system instructions for topic filtering
+    selected_document_ids: Optional[List[int]] # Professor-selected specific documents for this assessment
 
     # Output fields (what gets returned to the HTTP layer)
     output_question_text: Optional[str]
