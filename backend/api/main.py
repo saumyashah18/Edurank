@@ -76,8 +76,13 @@ def startup_event():
             default_course = Course(id=1, title="General Assessment Course", description="Default course for AI simulation")
             db.add(default_course)
             db.commit()
+
+        # Resume any interrupted background extractions
+        processor = MaterialProcessor(db)
+        processor.resume_interrupted_extractions()
+
     except Exception as e:
-        print(f"ERROR: Could not create default course: {e}")
+        print(f"ERROR during startup: {e}")
     finally:
         db.close()
 
@@ -430,8 +435,7 @@ def get_next_simulation_question(
         if not chunk:
             raise HTTPException(status_code=404, detail="No unique topics found. Review syllabus or clear history.")
 
-        # 3. Live Generation
-        # For simulation, we can also pass history turns if we want full chat awareness
+        # 3. Parse History for Context
         history_turns = []
         if history:
             # history is comma-separated pairs like "q1|a1,q2|a2"
@@ -442,7 +446,43 @@ def get_next_simulation_question(
                     history_turns.append({"role": "bot", "text": q})
                     history_turns.append({"role": "user", "text": a})
 
-        question = services.bot.generate_single_question(chunk, course_id=course_id, author=author, history_turns=history_turns)
+        # 4. Enhanced Simulation Logic: Evaluate last answer if present
+        is_follow_up = False
+        last_misconception = None
+        current_phase = 1
+
+        if history_turns and history_turns[-1]["role"] == "user":
+            last_answer = history_turns[-1]["text"]
+            last_question = history_turns[-2]["text"] if len(history_turns) >= 2 else ""
+            
+            # On-the-fly evaluation for simulation
+            eval_res = services.eval_svc.evaluate_answer(
+                question_text=last_question,
+                student_answer=last_answer,
+                instructions=services.bot.instructions
+            )
+            if eval_res.get("score", 1.0) < 0.4:
+                is_follow_up = True
+                last_misconception = eval_res.get("misconception")
+            
+            # Adaptive phasing for simulation: only if follow-up
+            if is_follow_up:
+                current_phase = 2
+                if len(history_turns) >= 4:
+                    current_phase = 3
+            else:
+                current_phase = 1
+
+        question = services.bot.generate_single_question(
+            chunk, 
+            course_id=course_id, 
+            author=author, 
+            history_turns=history_turns,
+            is_follow_up=is_follow_up,
+            phase=current_phase,
+            misconception=last_misconception,
+            turn_number=(len(history_turns) // 2) + 1
+        )
         
         if question:
             return {
@@ -763,7 +803,21 @@ def update_student_response(
         
     transcript.student_answer = data.get('new_answer')
     db.commit()
-    return {"status": "Updated", "message": "Response updated successfully"}
+    
+    # Trigger Re-evaluation and State Sync
+    try:
+        # Instantiate services locally since they weren't in the dependency list correctly
+        ai_services = AIServices(db)
+        manager = QuizManager(db, ai_services.eval_svc)
+        updated_transcript = manager.re_evaluate_transcript(transcript.id)
+        return {
+            "status": "Updated", 
+            "message": "Response updated and re-evaluated successfully",
+            "new_score": updated_transcript.score if updated_transcript else 0.0
+        }
+    except Exception as e:
+        print(f"[!] Re-evaluation failed for transcript {transcript.id}: {e}")
+        return {"status": "Updated", "message": "Response updated, but re-evaluation failed."}
 
 @app.post("/student/quiz/{quiz_id}/submit")
 def submit_answer(

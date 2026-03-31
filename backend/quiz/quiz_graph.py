@@ -180,13 +180,46 @@ class QuizGraph:
         bot = ProfessorBot(self.db, rag, planner)
         bot.instructions = quiz.instructions if quiz else None
 
+        # --- Fetch History for LLM Context ---
+        history_turns = []
+        try:
+            from ..database.models.transcript import Transcript
+            past_transcripts = self.db.query(Transcript).filter_by(
+                enrollment_id=state["student_id"],
+                quiz_id=state["quiz_id"]
+            ).order_by(Transcript.id.desc()).limit(3).all()
+            
+            # We want chronological order for the bot
+            for t in reversed(past_transcripts):
+                if t.question:
+                    history_turns.append({"role": "bot", "text": t.question.question_text})
+                history_turns.append({"role": "user", "text": t.student_answer})
+        except Exception as he:
+            print(f"[QuizGraph] History fetch warning: {he}")
+
+        # --- Adaptive Logic: Strictly remedial phases ---
+        action = state.get("last_recommended_action")
+        is_follow_up = action in ["retry_rephrase", "drop_to_prerequisite"]
+        
+        # Phase 1: Default (Fresh Question on any topic)
+        # Phase 2: Remedial Reflection (Locked to conceptual gap)
+        # Phase 3: Remedial Critique (Locked to conceptual gap)
+        current_phase = 1
+        if is_follow_up:
+            current_phase = 2 # First remedial turn
+            # If we've already asked 1 follow-up on this specific chunk, get deeper
+            if len(history_turns) >= 4:
+                current_phase = 3
+
         question = bot.generate_single_question(
             chunk=chunk,
             course_id=state["course_id"],
-            history_turns=[],
+            history_turns=history_turns,
             turn_number=state["turn_number"],
+            is_follow_up=is_follow_up,
+            phase=current_phase,
             bloom_phase=state["current_bloom_phase"],
-            misconception=state.get("last_misconception") if state["session_phase"] == "closing" else None,
+            misconception=state.get("last_misconception"),
             concept_name=state.get("current_concept_name")
         )
 

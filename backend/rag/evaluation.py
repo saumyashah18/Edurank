@@ -55,7 +55,7 @@ class EvaluationService:
         1. Score (0.0 to 1.0)
         2. Reasoning (Brief explanation of why this score was given)
         3. Any missing points from the syllabus.
-        4. Conceptual Gap Detected (True/False - set to True ONLY if the student demonstrates a fundamental misunderstanding. If they made a minor error, set to False).
+        5. Conceptual Gap Detected (True/False - set to True if the student demonstrates a knowledge gap, a fundamental misunderstanding, OR provides an answer like 'I don't know' or 'I'm not sure'. If they made a minor error but understand the core concept, set to False).
         """
         
         response_text = LLMCallLogger.timed_call(
@@ -85,7 +85,12 @@ class EvaluationService:
             score = raw_score
             
         reasoning = reasoning_match.group(1).strip() if reasoning_match else response_text
+        
+        # Determine conceptual gap with a programmatic override for very low scores
         conceptual_gap = True if gap_match and gap_match.group(1).lower() in ["yes", "true"] else False
+        if score < 0.3:
+            print(f"[Evaluation] Score {score} is low - forcing conceptual_gap=True for remediation.")
+            conceptual_gap = True
 
         # Phase 5: Misconception Detection & Concept Tagging
         misconception_data = self._detect_misconception(question_text, student_answer, score, reasoning, instructions=instructions)
@@ -129,10 +134,11 @@ class EvaluationService:
    EVALUATOR NOTES: {reasoning}
 
    Identify:
-   1. The specific misconception or knowledge gap (one clear sentence, or null if none)
+   1. The specific misconception or knowledge gap (one clear sentence). 
+      IMPORTANT: If the student says 'I don't know' or provides a completely irrelevant answer, state 'Student lacks knowledge on this topic'.
    2. The recommended next action:
-      - "drop_to_prerequisite": student is missing foundational knowledge
-      - "retry_rephrase": student partially understands, needs rephrasing
+      - "drop_to_prerequisite": student is missing foundational knowledge or said 'I don't know'
+      - "retry_rephrase": student partially understands, needs rephrasing or made a significant error
       - "deepen": student understands basics but needs deeper engagement
       - "move_on": student demonstrated sufficient understanding
    3. concept_tags: 2-5 short concept names this question tests (noun phrases, 2-4 words each)

@@ -126,6 +126,102 @@ class QuizManager:
             "recommended_action": eval_result.get("recommended_action")
         }
 
+    def re_evaluate_transcript(self, transcript_id: int):
+        """
+        Triggered when a student edits their answer.
+        Updates core evaluation metrics in the transcript and syncs with StudentModel.
+        """
+        transcript = self.db.query(Transcript).get(transcript_id)
+        if not transcript:
+            return None
+        
+        question = transcript.question
+        if not question:
+            return None
+            
+        quiz = self.db.query(Quiz).get(transcript.quiz_id)
+        instructions = quiz.instructions if quiz else None
+        
+        # 1. AI Content Scoring
+        eval_result = self.eval_service.evaluate_answer(
+            question_text=question.question_text,
+            student_answer=transcript.student_answer,
+            ideal_answer=question.ideal_answer,
+            instructions=instructions
+        )
+        
+        # 2. Update Transcript
+        transcript.score = eval_result.get("score", 0.0)
+        transcript.conceptual_gap = eval_result.get("conceptual_gap", False)
+        transcript.ai_evaluation = eval_result.get("reasoning", "RE_EVALUATED")
+        
+        # 3. AI Rubric Re-evaluation (if enabled)
+        if quiz and quiz.ai_eval_enabled and quiz.ai_eval_rubric:
+            try:
+                rubric = json.loads(quiz.ai_eval_rubric)
+                rubric_result = self.rubric_eval.evaluate(
+                    question_text=question.question_text,
+                    student_answer=transcript.student_answer,
+                    rubric=rubric
+                )
+                if rubric_result:
+                    transcript.ai_eval_results = json.dumps(rubric_result)
+            except Exception as e:
+                print(f"[!] Rubric re-eval error: {e}")
+
+        self.db.commit()
+
+        # 4. Global State Sync (LangGraph Subflow)
+        try:
+            from .quiz_graph import QuizGraph
+            from .quiz_state import QuizState
+            from ..database.models.concept import Concept, ConceptChunk
+            
+            # Find concept tags for this specific question's chunk
+            concept_tags = []
+            if question.chunk_id:
+                concepts = self.db.query(Concept).join(ConceptChunk).filter(
+                    ConceptChunk.chunk_id == question.chunk_id
+                ).all()
+                concept_tags = [c.name for c in concepts]
+
+            eval_state: QuizState = {
+                "student_id": transcript.enrollment_id or transcript.student_name,
+                "quiz_id": transcript.quiz_id,
+                "course_id": quiz.course_id if quiz else 0,
+                "current_concept_id": None,
+                "current_concept_name": concept_tags[0] if concept_tags else None,
+                "current_bloom_phase": 1,
+                "current_question_id": transcript.question_id,
+                "current_question_text": question.question_text,
+                "current_chunk_id": question.chunk_id,
+                "current_answer": transcript.student_answer,
+                "last_score": transcript.score,
+                "last_misconception": eval_result.get("misconception"),
+                "last_recommended_action": eval_result.get("recommended_action"),
+                "turn_number": 1,
+                "total_questions": 10,
+                "session_phase": "middle",
+                "used_chunk_ids": [],
+                "instructions": instructions,
+                "selected_document_ids": None,
+                "output_question_text": None,
+                "output_ideal_answer": None,
+                "output_hint": None,
+                "output_bloom_phase": 1,
+                "output_concept_name": None,
+                "output_session_phase": "middle",
+                "output_error": None
+            }
+
+            graph = QuizGraph(self.db)
+            graph.run_evaluate(eval_state) # This triggers both hint and update_model_node
+
+        except Exception as graph_e:
+            print(f"[QuizGraph] re_evaluate commit error: {graph_e}")
+
+        return transcript
+
     def get_next_question(
         self,
         quiz_id: int,
@@ -153,6 +249,28 @@ class QuizManager:
 
         course_id = quiz.course_id
 
+        # --- State Recovery: Fetch latest turn if not provided ---
+        last_recommended_action = None
+        if last_score is None:
+            last_t = self.db.query(Transcript).filter_by(
+                enrollment_id=enrollment_id,
+                quiz_id=quiz_id
+            ).order_by(Transcript.id.desc()).first()
+            if last_t:
+                last_score = last_t.score
+                # Extract misconception/action from evaluation text or other field if needed
+                # For now we use the ones that might have been saved in student_concept_state
+                # but transcript.conceptual_gap is also useful.
+                if last_t.conceptual_gap:
+                    # If it was a gap, we likely need to retry or drop
+                    # We can infer the action if not explicitly stored in Transcript
+                    # Re-calculating from score if necessary
+                    if last_score < 0.4:
+                        last_recommended_action = "retry_rephrase"
+                
+                if last_chunk_id is None:
+                    last_chunk_id = last_t.question.chunk_id if last_t.question else None
+
         state: QuizState = {
             "student_id": enrollment_id,
             "quiz_id": quiz_id,
@@ -166,7 +284,7 @@ class QuizManager:
             "current_answer": None,
             "last_score": last_score,
             "last_misconception": last_misconception,
-            "last_recommended_action": None,
+            "last_recommended_action": last_recommended_action,
             "turn_number": turn_number,
             "total_questions": total_questions,
             "session_phase": "opening",

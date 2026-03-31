@@ -704,6 +704,44 @@ class MaterialProcessor:
         finally:
             db.close()
 
+    def resume_interrupted_extractions(self):
+        """
+        Finds documents that are in CONCEPT_EXTRACTION state but have no active extraction thread.
+        This is typically called on startup to resume tasks interrupted by a crash or shutdown.
+        """
+        from ..database.models.course import Document, IngestionStatus
+        from ..database.models.hierarchy import Chapter, Section, Subsection
+
+        # Find all documents stuck in CONCEPT_EXTRACTION
+        stuck_docs = self.db.query(Document).filter(
+            Document.ingestion_status == IngestionStatus.CONCEPT_EXTRACTION
+        ).all()
+
+        if not stuck_docs:
+            return
+
+        print(f"\n[Resumption] Found {len(stuck_docs)} interrupted extraction tasks.")
+
+        for doc in stuck_docs:
+            # Get subsection IDs for this document
+            # Querying Subsection.id through the hierarchy linked to the document
+            subsection_ids = [
+                s[0] for s in self.db.query(Subsection.id)
+                .join(Section)
+                .join(Chapter)
+                .filter(Chapter.document_id == doc.id).all()
+            ]
+
+            if subsection_ids:
+                print(f"[Resumption] Restarting extraction for Document {doc.id} ({len(subsection_ids)} subsections)")
+                import threading
+                t = threading.Thread(
+                    target=self._run_concept_extraction_background,
+                    args=(doc.course_id, subsection_ids, doc.id),
+                    daemon=True
+                )
+                t.start()
+
     # ------------------------------------------------------------------
     #  CLEAR COURSE DATA (preserved from original)
     # ------------------------------------------------------------------

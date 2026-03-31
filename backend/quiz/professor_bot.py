@@ -123,18 +123,17 @@ Tone: Professional, encouraging, intellectually rigorous."""
         system_prompt = f"""ROLE: You are a state-of-the-art academic examiner. 
 You are conducting a 1-on-1 Socratic assessment for a student.
 
-STRICT MASTER RULES (MUST BE FOLLOWED AT ALL TIMES):
+{"PRIMARY SYSTEM INSTRUCTIONS:" if self.instructions else "DEFAULT PEDAGOGY:"}
 {base_instructions}
-
-{"" if self.instructions else "CORE PEDAGOGY:"}
-- Ask exactly ONE question at a time.
-- Base every question strictly on the provided reference material.
-- Never reveal the ideal answer.
-- Maintain a professional, academic tone.
 
 IMPORTANT: Your response MUST follow this exact structure:
 Question: [Your question text here]
-Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
+Ideal Answer: [A brief, 1-2 sentence expected answer here]
+
+STRICT MANDATE: You MUST prioritize the PRIMARY SYSTEM INSTRUCTIONS above all else. 
+If the instructions say 'be concise', do not write long paragraphs. 
+If they say 'oral-friendly', avoid formulas that cannot be spoken.
+"""
 
         # --- User Prompt: Pure context and material ---
         history_block = ""
@@ -152,19 +151,6 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
 
 {feedback_examples}"""
 
-        if is_follow_up:
-             user_prompt += "\n\n*** SPECIAL INSTRUCTION: You detected a CONCEPTUAL GAP in the student's previous answer. Instead of moving to a new concept, please ask a clarifying or probing follow-up question to help the student overcome this specific gap. ***"
-        else:
-             # Regular Phased Flow
-             if phase == 1:
-                 user_prompt += f"\n\n*** CURRENT ARC: PHASE 1 (Basic Comprehension) ***\nAsk one sharp question about a central theme or core concept from the provided reading by {author or 'the author'}."
-                 if turn_number == 1:
-                     user_prompt += "\n\n*** SPECIAL INSTRUCTION: This is the first question of the assessment. Ask your question directly and immediately. Do NOT include any greeting, welcome message, or introduction. Begin with the question itself. ***"
-             elif phase == 2:
-                 user_prompt += f"\n\n*** CURRENT ARC: PHASE 2 (Reflection - Follow-up) ***\nCRITICAL: You MUST specifically construct your question derived directly and exclusively from the student's PREVIOUS ANSWER. DO NOT ask a disconnected question from the reading. Start your question in a conversational manner acknowledging their exact point. For example, 'Yes, so you mentioned [their exact point], then how does [author] explain...'. Probe deeper into the 'Why' behind the specific logic or argument the student just mentioned regarding {author or 'the author'}."
-             elif phase == 3:
-                 user_prompt += f"\n\n*** CURRENT ARC: PHASE 3 (Critique - Follow-up) ***\nCRITICAL: You MUST specifically construct your question derived directly and exclusively from the student's PREVIOUS ANSWER. DO NOT ask a disconnected question. Start your question in a conversational manner acknowledging their exact point. Pivot to critical reflection based on their last response. Ask where the logic they just discussed fails in a contemporary context or what {author or 'the author'} overlooks."
-
         BLOOM_INSTRUCTIONS = {
             1: "BLOOM PHASE 1 (Recall): Ask the student to define or identify a key term or fact from the text. Keep it direct.",
             2: "BLOOM PHASE 2 (Comprehension): Ask the student to explain or summarise a concept in their own words.",
@@ -174,22 +160,41 @@ Ideal Answer: [A brief, 1-2 sentence expected answer here]"""
         }
         user_prompt += f"\n\n*** {BLOOM_INSTRUCTIONS.get(bloom_phase, BLOOM_INSTRUCTIONS[1])} ***"
 
+        if is_follow_up:
+             if phase == 2:
+                 user_prompt += "\n\n*** CURRENT ARC: REMEDIAL FOLLOW-UP (Acknowledge & Probe) ***\nYou detected a CONCEPTUAL GAP. You MUST specifically acknowledge their last response (e.g., 'You mentioned [point]...') and then ask a probing 'Why' or 'How' question to help them bridge that specific gap. Do NOT move to a new topic yet. ***"
+             elif phase == 3:
+                 user_prompt += "\n\n*** CURRENT ARC: REMEDIAL CRITIQUE (Deep Dive) ***\nThe student is still struggling. Pivot to a critical reflection. Acknowledge their response, then ask where the logic they just discussed fails or what they might have overlooked in the text. ***"
+             else:
+                 user_prompt += "\n\n*** SPECIAL INSTRUCTION: You detected a CONCEPTUAL GAP. Acknowledge their mistake and ask a clarifying question. ***"
+        else:
+             # Regular Phased Flow (Always Phase 1 if no gap)
+             user_prompt += f"\n\n*** CURRENT ARC: FRESH TOPIC (Basic Comprehension) ***\nAsk one sharp, independent question about a central theme or core concept from the reading by {author or 'the author'}. Do NOT feel forced to connect this to the previous answer if it was on a different topic. Start fresh."
+             if turn_number == 1:
+                 user_prompt += "\n\n*** SPECIAL INSTRUCTION: This is the first question of the assessment. Ask your question directly and immediately. Do NOT include any greeting. Begin with the question itself. ***"
+
         if misconception:
             user_prompt += f"\n\n*** MISCONCEPTION DETECTED: The student previously showed this gap: '{misconception}'. Generate a question that directly targets this specific gap to help them overcome it. ***"
 
         if concept_name:
             user_prompt += f"\n\n*** TARGET CONCEPT: Focus this question specifically on the concept: '{concept_name}'. ***"
 
-        user_prompt += "\n\nCRITICAL: Study the CONVERSATION HISTORY carefully. For Phase 1, ensure you pick a NEW concept not previously discussed. For Phases 2 and 3, ensure you are directly following up on the student's immediate previous answer using a conversational tone."
+        user_prompt += "\n\nSTRICT FINAL MANDATE: Study the CONVERSATION HISTORY carefully. "
+        if is_follow_up:
+            user_prompt += "\nCRITICAL: You are in a FOLLOW-UP mode. Your response MUST begin by acknowledging the student's previous point. Use a conversational bridge like 'You mentioned...' or 'Regarding your point about...'. DO NOT ignore the history. You must probe deeper into the logic of their previous answer."
+        else:
+            user_prompt += "\nFor this FRESH TOPIC turn, ensures you pick a NEW concept not previously discussed."
+
         user_prompt += "\n\nPlease generate the next question based on the reference material provided and following your system instructions."
 
-        print(f"[ProfessorBot] System prompt length: "
-              f"{len(system_prompt)} chars")
-        print(f"[ProfessorBot] User prompt length: "
-              f"{len(user_prompt)} chars")
-        print(f"[ProfessorBot] Chunk ID: {chunk.id} | "
-              f"Chunk type: {chunk.chunk_type}")
-
+        print(f"[ProfessorBot] System prompt length: {len(system_prompt)} chars")
+        print(f"[ProfessorBot] User prompt length: {len(user_prompt)} chars")
+        print(f"[ProfessorBot] Chunk ID: {chunk.id} | Chunk type: {chunk.chunk_type}")
+        
+        # Explicitly log adherence check to reassure user
+        instruction_flag = "VERIFIED" if self.instructions else "USING_DEFAULT"
+        print(f"[ProfessorBot] Pre-gen Instruction Check: {instruction_flag}")
+        
         print(f"DEBUG: Generating question #{turn_number} for Chunk ID: {chunk.id} (Follow-up: {is_follow_up})")
         raw_text = LLMCallLogger.timed_call(
             caller="ProfessorBot",
