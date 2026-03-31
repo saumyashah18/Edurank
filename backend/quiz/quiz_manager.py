@@ -6,7 +6,7 @@ from ..database.models.transcript import Transcript, Quiz
 from ..rag.evaluation import EvaluationService
 from .rubric_evaluator import RubricEvaluationService
 from datetime import datetime
-
+#
 class QuizManager:
     def __init__(self, db: Session, evaluation_service: EvaluationService):
         self.db = db

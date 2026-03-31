@@ -18,7 +18,7 @@ OPENROUTER_API_KEY=                     # required if LLM_MODE=api
 OPENROUTER_URL=https://openrouter.ai/api/v1/chat/completions
 OPENROUTER_MODEL=mistralai/mixtral-8x7b-instruct
 """
-
+#LLM 
 class LLMService:
     def __init__(self):
         self.mode = os.getenv("LLM_MODE", "local").lower()

@@ -536,7 +536,7 @@ class MaterialProcessor:
         return chapters
 
     # ------------------------------------------------------------------
-    #  STAGE 2.5: AUTHOR EXTRACTION (LLM)
+    #  STAGE 2.5: AUTHOR EXTRACTION (LLM)###
     # ------------------------------------------------------------------
 
     def _extract_author(self, text: str) -> str:

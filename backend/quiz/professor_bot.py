@@ -10,7 +10,7 @@ from .planner import TopicPlanner
 from .llm_service import llm
 from ..utils.llm_logger import LLMCallLogger
 
-
+#Proffessor 
 class ProfessorBot:
     def __init__(self, db: Session, rag_service: RAGService, planner: TopicPlanner):
         self.db = db

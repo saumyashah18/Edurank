@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from ..database.models.hierarchy import Chapter, Section, Subsection
 from ..database.models.transcript import Transcript
-
+#Topic Planner
 class TopicPlanner:
     def __init__(self, db: Session):
         self.db = db

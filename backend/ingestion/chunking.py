@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from ..database.models.chunk import Chunk, ChunkType
 from ..database.models.hierarchy import Subsection, RawMaterial
 import tiktoken
-
+#
 # Token counting with cl100k_base (GPT-4 / BGE compatible)
 enc = tiktoken.get_encoding("cl100k_base")
 MAX_CHUNK_TOKENS = 400  # BGE hard limit is 512; we target 400 for safety

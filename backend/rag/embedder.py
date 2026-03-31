@@ -86,7 +86,7 @@ class Embedder:
         self.db.commit()
         print("    -> All embeddings cleared.")
 
-
+#
 class RAGService:
     def __init__(self, db: Session, embedder: Embedder):
         self.db = db
