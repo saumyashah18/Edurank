@@ -2,7 +2,6 @@ fastapi
 uvicorn
 sqlalchemy
 google-generativeai==0.8.6
-huggingface_hub
 pgvector
 numpy
 python-multipart
@@ -19,7 +18,6 @@ gTTS
 pydub
 tiktoken
 langgraph
-sentence-transformers
 pydantic
 pydantic-settings
 python-pptx

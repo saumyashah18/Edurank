@@ -14,7 +14,7 @@ class Chunk(BaseModel):
     
     content = Column(Text, nullable=False)
     chunk_type = Column(Enum(ChunkType), nullable=False)
-    embedding = Column(Vector(1024), nullable=True)
+    embedding = Column(Vector(4096), nullable=True)
     subsection_id = Column(Integer, ForeignKey("subsections.id"))
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)  # Scope strictly for vector queries
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=True)

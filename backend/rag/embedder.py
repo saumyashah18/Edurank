@@ -1,43 +1,48 @@
-from typing import Optional
-from sentence_transformers import SentenceTransformer
+import os
+import requests
 import numpy as np
+from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from ..database.models.chunk import Chunk, ChunkType
-import os
 from dotenv import load_dotenv
+from ..database.models.chunk import Chunk, ChunkType
 
 load_dotenv()
 
+# Prefix for better Llama/BGE-like retrieval performance
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
-_model = None
-
-def _get_model(model_name: str = "BAAI/bge-large-en-v1.5"):
-    global _model
-    if _model is None:
-        print(f"[*] Loading embedding model: {model_name}...")
-        _model = SentenceTransformer(model_name)
-        print(f"[*] Embedding model loaded successfully.")
-    return _model
-
-
 class Embedder:
-    def __init__(self, db: Session, model_name: str = "BAAI/bge-large-en-v1.5"):
+    def __init__(self, db: Session, model_name: str = None):
         self.db = db
-        self.model_name = model_name
-        self.dimension = 1024
-        print(f"[*] Initializing Embedder: {self.model_name}")
-        self.model = _get_model(model_name)
+        # Prioritize ENV, then passed arg, then default
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        self.model_name = model_name or os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        self.dimension = 4096  # Llama 3.1 8B default dimension
+        print(f"[*] Initializing Ollama Embedder: {self.ollama_url} | Model: {self.model_name}")
+
+    def _call_ollama_embed(self, text: str) -> list:
+        """Calls Ollama's embedding API for a single text string."""
+        url = f"{self.ollama_url}/api/embeddings"
+        payload = {
+            "model": self.model_name,
+            "prompt": text
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=60)
+            response.raise_for_status()
+            return response.json().get("embedding", [])
+        except Exception as e:
+            print(f"[!] Ollama Embedding Error: {e}")
+            # Return zero vector if it fails to avoid breaking RAG completely
+            return [0.0] * self.dimension
 
     def embed_chunks(self, subsection_id: int):
         """
-        Embeds SMALL, MEDIUM, and LARGE chunks and stores vectors directly
-        in the Chunk.embedding column in Postgres via pgvector.
-        Documents are encoded WITHOUT the BGE query prefix.
+        Embeds SMALL, MEDIUM, and LARGE chunks via Ollama and stores vectors
+        in Postgres via pgvector.
         """
-        print(f"\n{'-'*20} VECTORIZATION START {'-'*20}")
-        # LARGE chunks embedded for broad topic retrieval (Phase 3 retrieve_broad)
+        print(f"\n{'-'*20} VECTORIZATION START (OLLAMA) {'-'*20}")
         chunks = self.db.query(Chunk).filter(
             Chunk.subsection_id == subsection_id,
             Chunk.chunk_type.in_([ChunkType.SMALL, ChunkType.MEDIUM, ChunkType.LARGE])
@@ -47,46 +52,40 @@ class Embedder:
             print(f"[!] No chunks found for subsection {subsection_id}")
             return
 
-        texts = [c.content for c in chunks]
-        print(f"[*] Encoding {len(texts)} chunks with {self.model_name}...")
+        print(f"[*] Encoding {len(chunks)} chunks with Ollama ({self.model_name})...")
 
-        # Documents — no prefix, this is intentional for BGE models
-        embeddings = self.model.encode(
-            texts,
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )
-
-        print(f"[*] Storing {len(embeddings)} vectors in pgvector...")
-        for chunk, embedding in zip(chunks, embeddings):
-            chunk.embedding = embedding.tolist()
+        count = 0
+        for chunk in chunks:
+            # We embed one by one since Ollama's batch embedding support varies by version
+            embedding = self._call_ollama_embed(chunk.content)
+            if embedding and len(embedding) == self.dimension:
+                chunk.embedding = embedding
+                count += 1
+            
+            if count % 10 == 0 and count > 0:
+                print(f"    -> Progress: {count}/{len(chunks)} chunks embedded")
 
         self.db.commit()
-        print(f"      -> SUCCESS: {len(chunks)} vectors stored in DB")
+        print(f"      -> SUCCESS: {count} vectors stored in DB")
         print(f"{'-'*20} VECTORIZATION COMPLETE {'-'*17}\n")
 
     def embed_query(self, query: str) -> list:
         """
-        Embeds a search query WITH the BGE instruction prefix.
-        Always use this for retrieval — never for document ingestion.
+        Embeds a search query with an instruction prefix for better retrieval performance.
         """
         prefixed = BGE_QUERY_PREFIX + query
-        embedding = self.model.encode(
-            prefixed,
-            normalize_embeddings=True
-        )
-        return embedding.tolist()
+        return self._call_ollama_embed(prefixed)
 
     def reset_index(self):
         """
-        Clears all stored embeddings from the database (Postgres pgvector).
+        Clears all stored embeddings from the database.
         """
         print("[*] Resetting all stored embeddings...")
         self.db.query(Chunk).update({"embedding": None})
         self.db.commit()
         print("    -> All embeddings cleared.")
 
-#
+
 class RAGService:
     def __init__(self, db: Session, embedder: Embedder):
         self.db = db
@@ -100,7 +99,7 @@ class RAGService:
         """
         Searches SMALL chunks by vector similarity, then returns parent chunks
         (MEDIUM) where available for broader context. Deduplicates by parent_chunk_id.
-        Used by: ProfessorBot, RubricEvaluationService.
+        Used by: ProfessorBot, Rubric Evaluation Service.
         """
         try:
             query_embedding = self.embedder.embed_query(query)
@@ -119,7 +118,6 @@ class RAGService:
         if course_id:
             params["course_id"] = course_id
         if selected_document_ids:
-            # SQLAlchemy with text() handles lists in IN clauses by wrapping in tuple
             params["doc_ids"] = tuple(selected_document_ids)
 
         results = self.db.execute(text(f"""
@@ -138,7 +136,6 @@ class RAGService:
             LIMIT :top_k
         """), params).fetchall()
 
-        # Log similarity scores for the original SMALL hits
         seen_parents = set()
         output_chunks = []
 
@@ -149,18 +146,18 @@ class RAGService:
             if not chunk:
                 continue
 
-            print(f"[RAG] chunk_id={chunk.id} type={chunk.chunk_type.value} score={similarity:.4f} course={chunk.subsection.section.chapter.course_id if chunk.subsection else None}")
+            print(f"[RAG] chunk_id={chunk.id} type={chunk.chunk_type.name} score={similarity:.4f}")
 
             # Small-to-big: swap to parent if available
             if chunk.parent_chunk_id:
                 if chunk.parent_chunk_id in seen_parents:
-                    continue  # Deduplicate: same parent already included
+                    continue  # Deduplicate
                 seen_parents.add(chunk.parent_chunk_id)
                 parent = self.db.query(Chunk).get(chunk.parent_chunk_id)
                 if parent:
                     output_chunks.append(parent)
                 else:
-                    output_chunks.append(chunk)  # Fallback if parent missing
+                    output_chunks.append(chunk)
             else:
                 output_chunks.append(chunk)
 
@@ -173,7 +170,6 @@ class RAGService:
     def retrieve_broad(self, query: str, top_k: int = 5, course_id: Optional[int] = None, selected_document_ids: Optional[list] = None):
         """
         Searches LARGE chunks for broad topic matching.
-        Used by: TopicPlanner for section/topic selection.
         """
         try:
             query_embedding = self.embedder.embed_query(query)
@@ -215,19 +211,18 @@ class RAGService:
             similarity = 1 - distance
             chunk = self.db.query(Chunk).get(chunk_id)
             if chunk:
-                print(f"[RAG] chunk_id={chunk.id} type={chunk.chunk_type.value} score={similarity:.4f} course={chunk.subsection.section.chapter.course_id if chunk.subsection else None}")
+                print(f"[RAG] chunk_id={chunk.id} type={chunk.chunk_type.name} score={similarity:.4f}")
                 chunks.append(chunk)
 
         return chunks
 
     # ------------------------------------------------------------------
-    #  LEGACY / GENERIC RETRIEVAL (backward compatible)
+    #  LEGACY / GENERIC RETRIEVAL
     # ------------------------------------------------------------------
 
-    def retrieve(self, query: str, top_k: int = 3, chunk_types: Optional[list] = None, course_id: Optional[int] = None, selected_document_ids: Optional[list] = None):
+    def retrieve(self, query: str, top_k: int = 3, chunk_types: Optional[List[ChunkType]] = None, course_id: Optional[int] = None, selected_document_ids: Optional[list] = None):
         """
-        Generic retrieval method — preserved for backward compatibility.
-        Supports optional chunk_type, course_id, and document_id filters.
+        Generic retrieval method preserve for backward compatibility.
         """
         try:
             query_embedding = self.embedder.embed_query(query)
@@ -275,37 +270,7 @@ class RAGService:
             similarity = 1 - distance
             chunk = self.db.query(Chunk).get(chunk_id)
             if chunk:
-                print(f"[RAG] chunk_id={chunk.id} type={chunk.chunk_type.value} score={similarity:.4f} course={chunk.subsection.section.chapter.course_id if chunk.subsection else None}")
+                print(f"[RAG] chunk_id={chunk.id} type={chunk.chunk_type.name} score={similarity:.4f}")
                 chunks.append(chunk)
 
         return chunks
-
-
-def test_prefix_improvement():
-    """
-    Run this to verify the prefix improves retrieval scores.
-    Usage: python -c "from backend.rag.embedder import test_prefix_improvement; test_prefix_improvement()"
-    """
-    from sentence_transformers import util
-
-    model = SentenceTransformer("BAAI/bge-large-en-v1.5")
-    prefix = BGE_QUERY_PREFIX
-
-    question = "What are the phases of mitosis?"
-    chunk = (
-        "Mitosis consists of four phases: prophase, metaphase, anaphase, "
-        "and telophase. Each phase has distinct characteristics..."
-    )
-
-    q_no_prefix  = model.encode(question,           normalize_embeddings=True)
-    q_with_prefix = model.encode(prefix + question,  normalize_embeddings=True)
-    doc           = model.encode(chunk,              normalize_embeddings=True)
-
-    score_before = util.cos_sim(q_no_prefix,  doc).item()
-    score_after  = util.cos_sim(q_with_prefix, doc).item()
-
-    print(f"Score WITHOUT prefix: {score_before:.4f}")
-    print(f"Score WITH prefix:    {score_after:.4f}")
-    print(f"Improvement:          +{score_after - score_before:.4f}")
-    assert score_after > score_before, "Prefix should improve similarity score"
-    print("Test passed.")

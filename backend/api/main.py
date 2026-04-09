@@ -1039,6 +1039,20 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
         
         return page, y
 
+    # Pre-calculate totals for header if AI evaluation is enabled
+    ai_eval_enabled = base_t.quiz.ai_eval_enabled if base_t.quiz else False
+    grand_total_awarded = 0
+    grand_total_max = 0
+    if ai_eval_enabled:
+        for t in all_interactions:
+            if t.ai_eval_results:
+                try:
+                    eval_data = json.loads(t.ai_eval_results)
+                    grand_total_awarded += eval_data.get("total_awarded", 0)
+                    grand_total_max += eval_data.get("total_max", 0)
+                except:
+                    pass
+
     # Header
     page.insert_text((50, cursor_y), "AIssociate ASSESSMENT TRANSCRIPT", fontsize=16, color=(0, 0, 1))
     cursor_y += 30
@@ -1046,9 +1060,13 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
     metadata = [
         f"STUDENT: {base_t.student_name}",
         f"ENROLLMENT: {base_t.enrollment_id}",
-        f"QUIZ ID: {base_t.quiz_id}",
-        f"DATE: {base_t.created_at.strftime('%Y-%m-%d %H:%M:%S') if base_t.created_at else 'N/A'}"
+        f"QUIZ: {base_t.quiz.title if base_t.quiz else 'N/A'}",
+        f"DATE: {base_t.created_at.strftime('%Y-%m-%d %H:%M:%S') if base_t.created_at else 'N/A'}",
+        f"QUIZ FULL MARKS: {base_t.quiz.total_marks if base_t.quiz else 'N/A'}"
     ]
+    
+    if ai_eval_enabled and grand_total_max > 0:
+        metadata.append(f"TOTAL OBTAINED: {grand_total_awarded} / {grand_total_max}")
     
     for line in metadata:
         page, cursor_y = check_page_break(doc, page, cursor_y, 20)
@@ -1060,12 +1078,24 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
     cursor_y += 30
     
     # Content
+    
     for i, t in enumerate(all_interactions):
         # spacer
         cursor_y += 10
         
         # Question
-        q_label = f"Q{i+1}: "
+        q_max = 0
+        if ai_eval_enabled and t.ai_eval_results:
+            try:
+                eval_data = json.loads(t.ai_eval_results)
+                q_max = eval_data.get("total_max", 0)
+            except: pass
+
+        q_label = f"Q{i+1}"
+        if q_max > 0:
+            q_label += f" [Max Marks: {q_max}]"
+        q_label += ": "
+        
         q_text = t.question.question_text if t.question else 'N/A'
         
         page, cursor_y = write_wrapped_text(doc, page, cursor_y, q_label + q_text, fontsize=11, bold=True)
@@ -1076,6 +1106,35 @@ def export_transcript_pdf(transcript_id: int, db: Session = Depends(get_db)):
         a_text = t.student_answer or "[No Answer]"
         page, cursor_y = write_wrapped_text(doc, page, cursor_y, a_label + a_text, fontsize=10, color=(0.2, 0.2, 0.2))
         
+        # AI Evaluation Section
+        if ai_eval_enabled and t.ai_eval_results:
+            try:
+                eval_data = json.loads(t.ai_eval_results)
+                cursor_y += 10
+                
+                # Header
+                page, cursor_y = write_wrapped_text(doc, page, cursor_y, "[ AI EVALUATION ]", fontsize=10, color=(0, 0, 0.7), bold=True)
+                
+                # Score & Remark
+                score_text = f"Score: {eval_data.get('total_awarded', 0)} / {eval_data.get('total_max', 0)}"
+                page, cursor_y = write_wrapped_text(doc, page, cursor_y, score_text, fontsize=10, color=(0.1, 0.5, 0.1))
+                
+                overall_remark = f"Remark: {eval_data.get('overall_remark', 'N/A')}"
+                page, cursor_y = write_wrapped_text(doc, page, cursor_y, overall_remark, fontsize=10, color=(0.1, 0.1, 0.1))
+                
+                # Detailed Criteria
+                criteria = eval_data.get('criteria_scores', [])
+                if criteria:
+                    cursor_y += 5
+                    for crit in criteria:
+                        c_text = f"- {crit.get('name', 'Criterion')}: {crit.get('awarded', 0)}/{crit.get('max_marks', 0)}"
+                        if crit.get('remark'):
+                            c_text += f" ({crit['remark']})"
+                        page, cursor_y = write_wrapped_text(doc, page, cursor_y, c_text, fontsize=9, color=(0.3, 0.3, 0.3))
+                
+            except Exception as e:
+                print(f"[PDF Export] Warning: Failed to parse AI evaluation: {e}")
+
         cursor_y += 10
         page, cursor_y = check_page_break(doc, page, cursor_y, 20)
         page.draw_line(fitz.Point(50, cursor_y), fitz.Point(550, cursor_y), color=(0.8, 0.8, 0.8), width=0.5)

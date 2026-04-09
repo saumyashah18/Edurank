@@ -18,11 +18,11 @@ OPENROUTER_API_KEY=                     # required if LLM_MODE=api
 OPENROUTER_URL=https://openrouter.ai/api/v1/chat/completions
 OPENROUTER_MODEL=mistralai/mixtral-8x7b-instruct
 """
-#LLM 
+
 class LLMService:
     def __init__(self):
         self.mode = os.getenv("LLM_MODE", "local").lower()
-        self.fast_mode = os.getenv("LLM_FAST_MODE", "openrouter").lower()
+        self.fast_mode = os.getenv("LLM_FAST_MODE", "local").lower()
         
         # Ollama config
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -32,11 +32,6 @@ class LLMService:
         self.api_url = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions")
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         self.api_model = os.getenv("OPENROUTER_MODEL", "mistralai/mixtral-8x7b-instruct")
-        
-        # Hugging Face config
-        self.hf_url = os.getenv("HUGGINGFACE_URL", "https://api-inference.huggingface.co/v1/chat/completions")
-        self.hf_token = os.getenv("HF_TOKEN")
-        self.hf_model = os.getenv("HUGGINGFACE_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
         
         print(f"[LLMService] Mode: {self.mode} | Fast Mode: {self.fast_mode} | Active Model: {self.model_name}")
 
@@ -56,42 +51,36 @@ class LLMService:
 
     def generate_content_fast(self, prompt: str, system_prompt: str = None) -> str:
         """
-        Fast path: Uses cloud API (Hugging Face or OpenRouter) for background tasks.
-        Falls back to local Ollama if no API key is configured or on rate limit.
+        Fast path: Uses local Ollama or OpenRouter. 
+        Hugging Face support has been removed (use local Llama instead).
         """
         provider = self.fast_mode
         
-        # Check if we have the necessary credentials
-        if provider == "huggingface" and not self.hf_token:
-            print("[LLMService] No HF_TOKEN set, falling back to OpenRouter for fast path")
-            provider = "openrouter"
-        
         if provider == "openrouter" and not self.api_key:
-            print("[LLMService] No OPENROUTER_API_KEY set, falling back to local Ollama for fast path")
+            print("[LLMService] No OPENROUTER_API_KEY set, defaulting to local Ollama for fast path")
+            provider = "local"
+
+        if provider == "local":
             return self._call_ollama(prompt, system_prompt)
 
+        # Retry logic for API providers
         import time
         for attempt in range(3):
-            if provider == "huggingface":
-                result = self._call_huggingface(prompt, system_prompt)
-            else:
-                result = self._call_openrouter(prompt, system_prompt)
+            result = self._call_openrouter(prompt, system_prompt)
                 
             if result == "ERROR_RATE_LIMIT":
                 wait_secs = 5 * (attempt + 1)
-                print(f"[LLMService] {provider.upper()} Rate limited, waiting {wait_secs}s (attempt {attempt+1}/3)")
+                print(f"[LLMService] OpenRouter Rate limited, waiting {wait_secs}s (attempt {attempt+1}/3)")
                 time.sleep(wait_secs)
                 continue
             
-            # If we get any other error, fall back to Ollama after the first failure
             if result.startswith("ERROR:"):
-                print(f"[LLMService] {provider.upper()} returned error, falling back to local Ollama: {result[:50]}...")
+                print(f"[LLMService] OpenRouter returned error, falling back to local Ollama: {result[:50]}...")
                 return self._call_ollama(prompt, system_prompt)
                 
             return result
 
-        # All retries exhausted (rate limits), fall back to local Ollama
-        print(f"[LLMService] {provider.upper()} rate limit persists, falling back to local Ollama")
+        print(f"[LLMService] OpenRouter retries exhausted, falling back to local Ollama")
         return self._call_ollama(prompt, system_prompt)
 
     def _call_ollama(self, prompt: str, system_prompt: str = None) -> str:
@@ -129,17 +118,6 @@ class LLMService:
             "HTTP-Referer": "EduRank"
         }
         return self._call_openai_compatible(self.api_url, self.api_model, headers, prompt, system_prompt)
-
-    def _call_huggingface(self, prompt: str, system_prompt: str = None) -> str:
-        """Calls Hugging Face Inference API."""
-        if not self.hf_token:
-            return "ERROR: HF_TOKEN not set in .env"
-            
-        headers = {
-            "Authorization": f"Bearer {self.hf_token}",
-            "Content-Type": "application/json"
-        }
-        return self._call_openai_compatible(self.hf_url, self.hf_model, headers, prompt, system_prompt)
 
     def _call_openai_compatible(self, url: str, model: str, headers: dict, prompt: str, system_prompt: str = None) -> str:
         """Generic helper for OpenAI-compatible chat completion endpoints."""
